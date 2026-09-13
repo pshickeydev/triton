@@ -1,0 +1,35 @@
+-- advanced.tidal: more complex Tidal patterns
+-- Evaluate blocks with Ctrl-J on multi-line selections
+
+-- Polyrhythm with different rhythms
+d1 $ sound "bd*3 sn ~ cp"
+d2 $ sound "bd(5,8)"
+d3 $ sound "[~ hh]*2 [~ hh]*2"
+
+-- Conditional patterns
+d1 $ when (== 0) (# speed "2") $ sound "bd sn ~ cp"
+d2 $ sound "bd*2 ~ bd sn" # every 3 rev (sound "cp*2")
+
+-- Effects and modulation
+d1 $ sound "bd sn bd sn" # speed "[1 1.5 0.5 1]"
+d2 $ sound "cp*2" # gain "[0.8 0.5]*4" # pan "[0 1]"
+
+-- Granular synthesis
+d3 $ sound "arpy*8" # speed "[0.5 1 1.5 2]"
+d4 $ sound "arpy(5,8)" # gain "0.6" # cut "1"
+
+-- Cut groups
+d1 $ sound "bd ~ [~ bd*2] ~" # cut "1"
+d2 $ sound "sn ~ ~ ~" # cut "1"
+
+-- Offbeat patterns
+d1 $ sound "~ bd ~ bd*2 ~ ~ sn ~"
+d2 $ sound "cp*4" # gain "[0.6 0.8 0.6 0.8]"
+d3 $ sound "bd cp bd*2 cp"
+d4 $ sound "~ hh*2 ~ hh*2 ~ hh*2 ~ hh*2"
+
+-- Everything at once
+d1 $ sound "bd sn bd sn" # gain "0.9"
+d2 $ sound "[~ cp]*2 [~ cp]*2" # gain "0.7"
+d3 $ sound "arpy(5,8)" # speed "1.2" # gain "0.5"
+d4 $ sound "hh*8" # gain "0.4"

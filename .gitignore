@@ -1,0 +1,6 @@
+.crush/
+dist-newstyle/
+*.db
+*.db-shm
+*.db-wal
+.ghc.environment.*

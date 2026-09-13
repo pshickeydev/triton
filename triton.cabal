@@ -1,0 +1,14 @@
+cabal-version:      3.0
+name:               triton
+version:            0.1.0.0
+synopsis:           Terminal TUI for live-coding music with Tidal Cycles
+build-type:         Simple
+
+common warnings
+    ghc-options: -Wall
+
+executable tidal-repl
+    import:           warnings
+    main-is:          Repl.hs
+    build-depends:    base, tidal
+    default-language: Haskell2010
