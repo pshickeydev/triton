@@ -15,6 +15,10 @@ The TUI does **not** produce sound. It communicates with two external processes:
 
 ## Prerequisites
 
+With [Nix](https://nixos.org/download.html) (flakes enabled), no manual installation is needed; see [Nix Setup](#nix-setup-recommended) below.
+
+Otherwise:
+
 | Dependency | Purpose |
 |---|---|
 | [Go](https://go.dev/) 1.24+ | Build and run triton |
@@ -24,7 +28,42 @@ The TUI does **not** produce sound. It communicates with two external processes:
 | [sc3-plugins](https://github.com/supercollider/sc3-plugins) (optional) | UGens for SuperDirt's synth sound banks |
 | [cabal](https://www.haskell.org/cabal/) | Haskell package manager |
 
-## Setup
+## Nix Setup (recommended)
+
+The flake provides triton with GHC+Tidal and SuperCollider+sc3-plugins already wired into its `PATH`:
+
+```bash
+nix run github:pshickeydev/triton            # build and run
+nix run github:pshickeydev/triton -- examples/basic.tidal
+```
+
+Or build and install it into your profile:
+
+```bash
+nix profile install github:pshickeydev/triton
+```
+
+For development, enter a shell with Go, GHC+Tidal, cabal, and SuperCollider+sc3-plugins:
+
+```bash
+nix develop
+```
+
+With the flake you can skip the `cabal install --lib tidal` step (the provided `ghci` already sees Tidal) and the optional sc3-plugins step (they are bundled). The bundled `start-superdirt.scd` is embedded in the binary, so `triton` works from any directory without the checkout. The flake's `triton` also ignores stale `.ghc.environment.*` files left over from a manual `cabal install --lib tidal --package-env .`, which would otherwise stop its GHCi from starting; set `GHC_ENVIRONMENT` yourself to override.
+
+The flake's `scsynth` speaks JACK only (how nixpkgs builds SuperCollider). When PipeWire is running and no jackd is, the wrapped server automatically loads PipeWire's JACK emulation instead, so audio works without configuring a JACK server. With a real jackd running, the wrapper leaves the JACK library selection alone.
+
+SuperDirt itself (a SuperCollider quirk) is installed into your user directory the first time, using the helper the flake provides:
+
+```bash
+triton-install-superdirt
+```
+
+(From a checkout, `sclang install-superdirt.scd` does the same.)
+
+Note: nixpkgs has no SuperCollider for Apple Silicon macOS. There, the flake provides triton with GHC+Tidal only; install [SuperCollider](https://supercollider.github.io/) (with sc3-plugins) separately and make sure `sclang` is on your `PATH`.
+
+## Manual Setup
 
 ### 1. Install Tidal as a local package
 
@@ -121,7 +160,9 @@ tidal_control_port = 6010
 
 [superdirt]
 executable = "sclang"
-boot_script = "start-superdirt.scd"   # must print "SuperDirt ready" when done
+boot_script = "start-superdirt.scd"   # must print "SuperDirt ready" when done;
+                                      # the bundled copy is used when this default
+                                      # path does not exist (e.g. installed binaries)
 auto_start = true
 
 [ui]
@@ -157,7 +198,14 @@ See `examples/basic.tidal` and `examples/advanced.tidal` for sample Tidal patter
 
 ## Quick Start
 
-Requires Go 1.24+, GHC, and a working Tidal Cycles / SuperDirt setup (see Prerequisites below).
+With Nix (see [Nix Setup](#nix-setup-recommended)):
+
+```bash
+triton-install-superdirt   # first time only
+nix run github:pshickeydev/triton -- examples/basic.tidal
+```
+
+Without Nix: requires Go 1.24+, GHC, and a working Tidal Cycles / SuperDirt setup (see [Prerequisites](#prerequisites)).
 
 ```bash
 go build -o triton .
@@ -171,10 +219,11 @@ Local state (SQLite DB, logs) is kept in `.crush/`; it is excluded from version 
 ```
 triton/
 ├── main.go                        # Entry point
+├── flake.nix                      # Nix flake: app package, GHC+Tidal, SuperCollider, dev shell
 ├── triton.cabal              # Haskell project (Tidal dependency)
 ├── Repl.hs                        # Dummy Haskell module for cabal
 ├── boot/BootTidal-triton.hs         # Cursor-enabled Tidal boot script
-├── start-superdirt.scd            # SuperCollider boot script
+├── start-superdirt.scd            # SuperCollider boot script (embedded in the binary)
 ├── install-superdirt.scd          # SuperDirt installer
 ├── internal/
 │   ├── config/config.go           # TOML config + env overrides
@@ -202,6 +251,6 @@ triton/
 
 ## Development
 
-Run `gofmt -w` on modified Go files to keep formatting consistent.
+Run `gofmt -w` on modified Go files to keep formatting consistent. Use `nix develop` for a shell with all tooling (Go, GHC+Tidal, cabal, SuperCollider+sc3-plugins).
 
 See [docs/DESIGN.md](docs/DESIGN.md) for the full architecture document and [AGENTS.md](AGENTS.md) for code style and commit conventions.

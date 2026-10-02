@@ -4,3 +4,5 @@ dist-newstyle/
 *.db-shm
 *.db-wal
 .ghc.environment.*
+result
+result-*

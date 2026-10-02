@@ -55,6 +55,11 @@ type CursorConfig struct {
 	BootScript string `toml:"boot_script"`
 }
 
+// DefaultSuperDirtBootScript is the default superdirt.boot_script value.
+// main embeds a copy under this name so installed binaries work outside
+// the project directory.
+const DefaultSuperDirtBootScript = "start-superdirt.scd"
+
 func Default() Config {
 	return Config{
 		GHCi: GHCiConfig{
@@ -73,7 +78,7 @@ func Default() Config {
 		},
 		SuperDirt: SuperDirtConfig{
 			Executable: "sclang",
-			BootScript: "start-superdirt.scd",
+			BootScript: DefaultSuperDirtBootScript,
 			AutoStart:  true,
 		},
 		Cursor: CursorConfig{

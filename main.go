@@ -22,6 +22,9 @@ import (
 //go:embed boot/BootTidal-triton.hs
 var cursorBootScript string
 
+//go:embed start-superdirt.scd
+var superdirtBootScript string
+
 // editorTargetAddr is the unique address fragment of the bundled script's
 // editor target, used to carry the configured listener host and port into
 // the GHCi session.
@@ -50,6 +53,32 @@ func cursorBootPath(override, host string, port int) (string, func(), error) {
 		return "", nil, err
 	}
 	if _, err := f.WriteString(script); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", nil, err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", nil, err
+	}
+	return f.Name(), func() { os.Remove(f.Name()) }, nil
+}
+
+// superdirtBootPath resolves the SuperDirt boot script: the configured
+// path when that file exists, otherwise the bundled start-superdirt.scd
+// written to a temp file when the config still carries the default name
+// (so installed binaries work outside the project directory). Any other
+// missing path is returned unchanged for the dependency check to report.
+// The returned cleanup removes the temp file.
+func superdirtBootPath(script string) (string, func(), error) {
+	if _, err := os.Stat(script); err == nil || script != config.DefaultSuperDirtBootScript {
+		return script, func() {}, nil
+	}
+	f, err := os.CreateTemp("", "start-superdirt-*.scd")
+	if err != nil {
+		return "", nil, err
+	}
+	if _, err := f.WriteString(superdirtBootScript); err != nil {
 		f.Close()
 		os.Remove(f.Name())
 		return "", nil, err
@@ -106,6 +135,14 @@ func main() {
 
 	var scProc *superdirt.Process
 	if cfg.SuperDirt.AutoStart {
+		script, cleanupScript, err := superdirtBootPath(cfg.SuperDirt.BootScript)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "preparing SuperDirt boot script: %v\n", err)
+			os.Exit(1)
+		}
+		defer cleanupScript()
+		cfg.SuperDirt.BootScript = script
+
 		fmt.Fprintf(os.Stderr, "starting SuperDirt...\n")
 		scProc, err = superdirt.New(cfg.SuperDirt.Executable, cfg.SuperDirt.BootScript)
 		if err != nil {
