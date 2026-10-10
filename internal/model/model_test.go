@@ -11,9 +11,8 @@ import (
 
 	"github.com/pshickeydev/triton/internal/cursor"
 	"github.com/pshickeydev/triton/internal/doc"
-	"github.com/pshickeydev/triton/internal/osc"
 	"github.com/pshickeydev/triton/internal/status"
-	"github.com/pshickeydev/triton/ui"
+	"github.com/pshickeydev/triton/internal/ui"
 )
 
 func newTestModel() Model {
@@ -325,140 +324,6 @@ func TestResize_SmallToLargeKeepsState(t *testing.T) {
 	}
 }
 
-func TestExtractBlock_SingleLine(t *testing.T) {
-	lines := []string{"d1 $ sound \"bd sn\"", "", "d2 $ sound \"cp\""}
-	code, start := extractBlock(lines, 0)
-	if code != "d1 $ sound \"bd sn\"" {
-		t.Errorf("expected single line, got %q", code)
-	}
-	if start != 0 {
-		t.Errorf("expected start 0, got %d", start)
-	}
-}
-
-func TestExtractBlock_MultiLine(t *testing.T) {
-	lines := []string{
-		"-- comment",
-		"",
-		"d1 $ sound \"bd sn\"",
-		"  # gain \"0.8\"",
-		"  # speed \"2\"",
-		"",
-		"-- next block",
-	}
-	code, start := extractBlock(lines, 2)
-	expected := "d1 $ sound \"bd sn\"\n  # gain \"0.8\"\n  # speed \"2\""
-	if code != expected {
-		t.Errorf("expected:\n%q\ngot:\n%q", expected, code)
-	}
-	if start != 2 {
-		t.Errorf("expected start 2, got %d", start)
-	}
-}
-
-func TestExtractBlock_EmptyLine(t *testing.T) {
-	lines := []string{"d1 $ sound \"bd\"", "", "d2 $ sound \"cp\""}
-	code, start := extractBlock(lines, 1)
-	if code != "" {
-		t.Errorf("expected empty string for blank line, got %q", code)
-	}
-	if start != 1 {
-		t.Errorf("expected start 1, got %d", start)
-	}
-}
-
-func TestExtractBlock_EmptyBuffer(t *testing.T) {
-	code, start := extractBlock([]string{}, 0)
-	if code != "" {
-		t.Errorf("expected empty string, got %q", code)
-	}
-	if start != 0 {
-		t.Errorf("expected start 0, got %d", start)
-	}
-}
-
-func TestExtractBlock_CursorOutOfBounds(t *testing.T) {
-	lines := []string{"d1 $ sound \"bd\""}
-	code, start := extractBlock(lines, 5)
-	if code != "d1 $ sound \"bd\"" {
-		t.Errorf("expected clamped line, got %q", code)
-	}
-	if start != 0 {
-		t.Errorf("expected start 0, got %d", start)
-	}
-}
-
-func TestExtractBlock_NegativeCursor(t *testing.T) {
-	lines := []string{"d1 $ sound \"bd\""}
-	code, start := extractBlock(lines, -1)
-	if code != "d1 $ sound \"bd\"" {
-		t.Errorf("expected clamped line, got %q", code)
-	}
-	if start != 0 {
-		t.Errorf("expected start 0, got %d", start)
-	}
-}
-
-func TestExtractBlock_LastBlock(t *testing.T) {
-	lines := []string{
-		"d1 $ sound \"bd\"",
-		"",
-		"d2 $ sound \"cp\"",
-		"d3 $ sound \"hh\"",
-	}
-	code, start := extractBlock(lines, 3)
-	expected := "d2 $ sound \"cp\"\nd3 $ sound \"hh\""
-	if code != expected {
-		t.Errorf("expected:\n%q\ngot:\n%q", expected, code)
-	}
-	if start != 2 {
-		t.Errorf("expected start 2, got %d", start)
-	}
-}
-
-func TestPatternStream(t *testing.T) {
-	cases := []struct {
-		line string
-		want int
-		ok   bool
-	}{
-		{`d1 $ sound "bd"`, 1, true},
-		{`  d2  $ sound "bd"`, 2, true},
-		{`d12$ s "cp"`, 12, true},
-		{`-- d1 $ sound "bd"`, 0, false},
-		{`sound "bd"`, 0, false},
-		{`d1 = sound "bd"`, 0, false},
-	}
-	for _, c := range cases {
-		n, ok := patternStream(c.line)
-		if ok != c.ok || n != c.want {
-			t.Errorf("patternStream(%q) = (%d, %v), want (%d, %v)", c.line, n, ok, c.want, c.ok)
-		}
-	}
-}
-
-func TestStreamSegments(t *testing.T) {
-	code := "d1 $ sound \"bd\"\n  # speed \"2\"\n\nlet x = 2\nd2 $ sound \"cp\"\nd1 $ sound \"sn\""
-
-	segs := streamSegments(code)
-	if len(segs) != 2 {
-		t.Fatalf("expected 2 streams, got %d", len(segs))
-	}
-	if len(segs[1]) != 2 {
-		t.Fatalf("expected 2 segments for stream 1, got %d", len(segs[1]))
-	}
-	wantFirst := "d1 $ sound \"bd\"\n  # speed \"2\""
-	if segs[1][0] != wantFirst {
-		t.Errorf("first d1 segment = %q, want %q", segs[1][0], wantFirst)
-	}
-	if segs[1][1] != "d1 $ sound \"sn\"" {
-		t.Errorf("second d1 segment = %q", segs[1][1])
-	}
-	if segs[2][0] != "d2 $ sound \"cp\"" {
-		t.Errorf("d2 segment = %q, want %q", segs[2][0], "d2 $ sound \"cp\"")
-	}
-}
-
 func TestRefreshEdited(t *testing.T) {
 	m := newTestModel()
 	m.textarea.SetValue("d1 $ sound \"bd sn\"\n\nd2 $ sound \"cp\"")
@@ -735,7 +600,7 @@ func newDispatchModel() Model {
 	tracker.SetCPS(0.6)
 	panel := status.NewPanel(tracker, ui.DarkTheme().Palette)
 	console := status.NewLog(ui.DarkTheme().Palette)
-	m := NewModel(ui.DarkTheme(), nil, osc.New("127.0.0.1", 6010), tracker, panel, console, GhciConfig{})
+	m := NewModel(ui.DarkTheme(), nil, okTransport{}, tracker, panel, console, GhciConfig{})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return updated.(Model)
 }
@@ -1401,15 +1266,37 @@ func TestLoad_ClearsMarkerForRemovedPlayingPattern(t *testing.T) {
 	}
 }
 
-// failingOSC returns an OSC client whose sends always fail: the port is
-// outside the valid range, so address resolution errors on every send.
-func failingOSC() *osc.Client {
-	return osc.New("127.0.0.1", 70000)
-}
+var errSend = errors.New("send failed")
+
+// okTransport accepts every transport command, standing in for a
+// reachable Tidal control port.
+type okTransport struct{}
+
+func (okTransport) Hush() error                { return nil }
+func (okTransport) MuteAll() error             { return nil }
+func (okTransport) UnmuteAll() error           { return nil }
+func (okTransport) Mute(streamNum int) error   { return nil }
+func (okTransport) Unmute(streamNum int) error { return nil }
+func (okTransport) Solo(streamNum int) error   { return nil }
+func (okTransport) Unsolo(streamNum int) error { return nil }
+func (okTransport) SetTempo(cps float64) error { return nil }
+
+// errTransport fails every send, standing in for an unreachable Tidal
+// control port.
+type errTransport struct{ okTransport }
+
+func (errTransport) Hush() error                { return errSend }
+func (errTransport) MuteAll() error             { return errSend }
+func (errTransport) UnmuteAll() error           { return errSend }
+func (errTransport) Mute(streamNum int) error   { return errSend }
+func (errTransport) Unmute(streamNum int) error { return errSend }
+func (errTransport) Solo(streamNum int) error   { return errSend }
+func (errTransport) Unsolo(streamNum int) error { return errSend }
+func (errTransport) SetTempo(cps float64) error { return errSend }
 
 func TestToggleMute_RevertsOnSendFailure(t *testing.T) {
 	m := newDispatchModel()
-	m.oscClient = failingOSC()
+	m.oscClient = errTransport{}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyF1})
 	um := updated.(Model)
@@ -1420,7 +1307,7 @@ func TestToggleMute_RevertsOnSendFailure(t *testing.T) {
 
 func TestToggleSolo_RevertsToMutedOnSendFailure(t *testing.T) {
 	m := newDispatchModel()
-	m.oscClient = failingOSC()
+	m.oscClient = errTransport{}
 	m.tracker.SetMuted(1)
 
 	updated, _ := m.Update(altKey('1'))
@@ -1432,7 +1319,7 @@ func TestToggleSolo_RevertsToMutedOnSendFailure(t *testing.T) {
 
 func TestTempo_KeepsCPSOnSendFailure(t *testing.T) {
 	m := newDispatchModel()
-	m.oscClient = failingOSC()
+	m.oscClient = errTransport{}
 
 	updated, _ := m.Update(altKey(']'))
 	um := updated.(Model)

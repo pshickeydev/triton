@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/pshickeydev/triton/internal/boot"
 	"github.com/pshickeydev/triton/internal/config"
 	"github.com/pshickeydev/triton/internal/cursor"
 	"github.com/pshickeydev/triton/internal/doc"
@@ -16,7 +17,7 @@ import (
 	"github.com/pshickeydev/triton/internal/osc"
 	"github.com/pshickeydev/triton/internal/status"
 	"github.com/pshickeydev/triton/internal/superdirt"
-	"github.com/pshickeydev/triton/ui"
+	"github.com/pshickeydev/triton/internal/ui"
 )
 
 //go:embed boot/BootTidal-triton.hs
@@ -24,71 +25,6 @@ var cursorBootScript string
 
 //go:embed start-superdirt.scd
 var superdirtBootScript string
-
-// editorTargetAddr is the unique address fragment of the bundled script's
-// editor target, used to carry the configured listener host and port into
-// the GHCi session.
-const editorTargetAddr = `oAddress = "127.0.0.1", oPort = 6013`
-
-// cursorBootPath resolves the boot script for the cursor-enabled GHCi
-// session: the configured override when set (its own responsibility to
-// match the listener address), otherwise the bundled BootTidal-triton.hs
-// rewritten with the configured host and port and written to a temp
-// file. The returned cleanup removes the temp file.
-func cursorBootPath(override, host string, port int) (string, func(), error) {
-	if override != "" {
-		return override, func() {}, nil
-	}
-	if strings.Count(cursorBootScript, editorTargetAddr) != 1 {
-		return "", nil, fmt.Errorf("bundled boot script lacks the editor target address")
-	}
-	script := strings.Replace(
-		cursorBootScript,
-		editorTargetAddr,
-		fmt.Sprintf("oAddress = %q, oPort = %d", host, port),
-		1,
-	)
-	f, err := os.CreateTemp("", "BootTidal-triton-*.hs")
-	if err != nil {
-		return "", nil, err
-	}
-	if _, err := f.WriteString(script); err != nil {
-		f.Close()
-		os.Remove(f.Name())
-		return "", nil, err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(f.Name())
-		return "", nil, err
-	}
-	return f.Name(), func() { os.Remove(f.Name()) }, nil
-}
-
-// superdirtBootPath resolves the SuperDirt boot script: the configured
-// path when that file exists, otherwise the bundled start-superdirt.scd
-// written to a temp file when the config still carries the default name
-// (so installed binaries work outside the project directory). Any other
-// missing path is returned unchanged for the dependency check to report.
-// The returned cleanup removes the temp file.
-func superdirtBootPath(script string) (string, func(), error) {
-	if _, err := os.Stat(script); err == nil || script != config.DefaultSuperDirtBootScript {
-		return script, func() {}, nil
-	}
-	f, err := os.CreateTemp("", "start-superdirt-*.scd")
-	if err != nil {
-		return "", nil, err
-	}
-	if _, err := f.WriteString(superdirtBootScript); err != nil {
-		f.Close()
-		os.Remove(f.Name())
-		return "", nil, err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(f.Name())
-		return "", nil, err
-	}
-	return f.Name(), func() { os.Remove(f.Name()) }, nil
-}
 
 // parseArgs returns the optional .tidal file to open at startup.
 func parseArgs(args []string) (string, error) {
@@ -135,7 +71,7 @@ func main() {
 
 	var scProc *superdirt.Process
 	if cfg.SuperDirt.AutoStart {
-		script, cleanupScript, err := superdirtBootPath(cfg.SuperDirt.BootScript)
+		script, cleanupScript, err := boot.SuperDirt(cfg.SuperDirt.BootScript, superdirtBootScript)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "preparing SuperDirt boot script: %v\n", err)
 			os.Exit(1)
@@ -163,7 +99,7 @@ func main() {
 
 	bootScript := cfg.GHCi.BootScript
 	if cfg.Cursor.Enabled {
-		path, cleanupBoot, err := cursorBootPath(cfg.Cursor.BootScript, cfg.Cursor.Host, cfg.Cursor.Port)
+		path, cleanupBoot, err := boot.Cursor(cfg.Cursor.BootScript, cursorBootScript, cfg.Cursor.Host, cfg.Cursor.Port)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "preparing cursor boot script: %v\n", err)
 			os.Exit(1)

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pshickeydev/triton/ui"
+	"github.com/pshickeydev/triton/internal/ui"
 )
 
 func newTestLog() *Log {

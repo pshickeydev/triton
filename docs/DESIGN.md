@@ -43,7 +43,7 @@ flowchart TD
 
 4. **SuperDirt lifecycle**: On startup, the TUI spawns `sclang` with the SuperDirt boot script, waits for the ready signal, then starts GHCi. On exit, both subprocesses are cleaned up.
 
-5. **File persistence**: The editor buffer loads from and saves to `.tidal` files through `internal/doc` (see 3.10) — no external processes involved.
+5. **File persistence**: The editor buffer loads from and saves to `.tidal` files through `internal/doc` (see 3.9) — no external processes involved.
 
 ### 2.2 Process Management
 
@@ -55,44 +55,31 @@ The TUI manages three subprocess lifecycles:
 
 ## 3. Components
 
-### 3.1 GHCi Process Manager
+### 3.1 Process Layer
 
-Manages a GHCi subprocess running BootTidal.hs.
+`internal/proc` owns the shared child-process plumbing: spawning with
+piped stdio, line-oriented output forwarding into a bounded channel that
+keeps the newest lines, a done channel, and graceful quit-then-kill
+shutdown. The drivers build on it.
 
-**Responsibilities:**
-- Spawn GHCi with the correct working directory
-- Send `:script BootTidal.hs` through stdin after GHCi starts (not as a CLI flag)
-- Write evaluated code lines to GHCi's stdin
-- Read GHCi's stdout/stderr for errors and display them
-- Handle process lifecycle (restart on crash, cleanup on exit)
+The model talks to both drivers through narrow interfaces (`model.Evaluator`,
+`model.Transport`) instead of concrete process types, so the UI layer can be
+tested with fakes and the drivers can evolve independently.
 
-**Key design decisions:**
-- Use `os/exec` with `cmd.StdinPipe()` and `cmd.StdoutPipe()`
-- Run stdout/stderr reading in goroutines, forwarding to a channel
-- Output channel is closed after both reader goroutines finish (via `sync.WaitGroup`) to prevent goroutine leaks
-- Multi-line blocks sent using GHCi's `:{` ... `:}` delimiters
+- **GHCi** (`internal/ghci/process.go`): started after SuperDirt is ready. Sends `:script BootTidal.hs` through stdin on startup. Supports restart via `Ctrl-R` using an epoch counter to invalidate stale goroutines; the close-and-respawn runs in a Bubble Tea command so a slow shutdown does not freeze the UI, and a quit requested during a restart completes once the restart settles. Graceful shutdown with a 3-second timeout before kill.
+- **SuperDirt** (`internal/superdirt/process.go`): started first on launch, with its process group set up so cleanup kills spawned children too. Scans stdout for the `SuperDirt` ready marker and surfaces warnings (e.g. missing sc3-plugins). 30-second boot timeout, 5-second graceful shutdown.
+
+**GHCi evaluation details:**
+- Multi-line blocks sent using GHCi's `:{` ... `:}` delimiters, with independent statements sent as single lines
 - Single-line evaluation sends the code followed by a newline
-- `writeLocked()` is a private method shared by `Evaluate` and `EvaluateMulti` to avoid mutex re-entrancy deadlock
 - BootTidal.hs path is configurable; default points to the cabal store location
 - GHCi process is started from the project directory so the `.ghc.environment` file (created by `cabal install --lib tidal --package-env .`) makes Tidal visible without global registration
-- Graceful shutdown: sends `:quit`, waits up to 3 seconds, then kills
 
-### 3.2 SuperDirt Process Manager
-
-Manages the SuperCollider/SuperDirt subprocess.
-
-**Responsibilities:**
-- Spawn `sclang` with the SuperDirt boot script
-- Detect readiness by scanning stdout for the `SuperDirt` marker
-- Wait for ready signal before GHCi starts (30-second timeout)
-- Clean up on exit (5-second graceful timeout before kill)
-
-**Key design decisions:**
+**SuperDirt details:**
 - `markReady()` closes the `readyCh` channel inside the mutex to prevent double-close panics from concurrent stdout/stderr goroutines
-- Output channel closed after both reader goroutines finish via `sync.WaitGroup`
 - Auto-start can be disabled via config (`superdirt.auto_start = false`)
 
-### 3.3 OSC Client
+### 3.2 OSC Client
 
 Sends control messages to Tidal's inbound OSC port (127.0.0.1:6010).
 
@@ -110,7 +97,7 @@ Sends control messages to Tidal's inbound OSC port (127.0.0.1:6010).
 - OSC addresses, max stream number, and error messages are extracted to constants
 - `validateStream()` helper centralizes the 1-16 range check
 
-### 3.4 Code Editor
+### 3.3 Code Editor
 
 An embedded code editor for writing Tidal/Haskell pattern code.
 
@@ -118,15 +105,15 @@ An embedded code editor for writing Tidal/Haskell pattern code.
 - Multi-line text editing (Bubbles `textarea` component)
 - Evaluate on `Ctrl-J` — extract and send the contiguous block of non-empty lines around the cursor
 - Evaluate on `Ctrl-L` — send only the current line
-- Block extraction via `extractBlock()` which finds the surrounding non-empty lines
+- Block extraction via `tidal.ExtractBlock` which finds the surrounding non-empty lines
 
 **Implementation notes:**
 - Bubbles `textarea` provides basic multi-line editing but lacks syntax highlighting
 - Syntax highlighting is deferred to Phase 3
-- `extractBlock()` clamps the cursor line to bounds, returns empty string for blank lines, expands outward to find contiguous non-empty lines
+- `tidal.ExtractBlock` clamps the cursor line to bounds, returns empty string for blank lines, expands outward to find contiguous non-empty lines
 - Multi-line blocks are sent to GHCi using `:{` ... `:}` delimiters via `EvaluateMulti()`
 
-### 3.5 Status Panel
+### 3.4 Status Panel
 
 Displays live information about the Tidal session.
 
@@ -146,11 +133,11 @@ Tidal does not expose rich state over OSC. Options for getting state:
 
 **Current approach:** Option 4 (manual tracking) is implemented. The `status.Tracker` maintains stream state (idle/active/muted/soloed) with mutex-protected access. Mute and solo toggles revert to the previous state when the OSC send fails, so the panel never claims a state Tidal did not apply. The `status.Panel` renders the tracker state using the stream palette derived from the active theme.
 
-**Playing vs edited:** Pattern code is compared per stream, not per block. Both the editor and the evaluated code are split into segments: a segment starts at a `dn $` assignment line and ends at the next assignment or blank line, so continuation lines belong to the pattern above them. Successful evaluation records each stream's segment of the evaluated code (`Tracker.SetPlaying`, keeping muted/soloed transport state intact); when a block assigns the same stream more than once, the last assignment is the one playing. Whenever the editor content changes, the model recomputes for each stream whether the code last evaluated for it still appears in the editor as one of its segments (modulo whitespace) and flags mismatches as edited: the pattern currently playing is not what the editor shows. This makes `Ctrl-J` (block) and `Ctrl-L` (line) behave consistently: evaluating a stream's full pattern clears its flag, evaluating only part of a multi-line pattern keeps it, and editing the editor afterwards restores it. Hush and GHCi restart clear all recorded playing code, since no pattern keeps playing after either. Unmuting (`Ctrl-U`, or the second press of a mute toggle) restores a muted stream to active only when a pattern is recorded as playing on it; otherwise it returns to idle, so "active" always means a pattern is playing.
+**Playing vs edited:** Pattern code is compared per stream, not per block. The segmentation itself lives in `internal/tidal` (`Segments`/`Segmented`/`Normalize`), shared by evaluation tracking and the editor comparison. Both the editor and the evaluated code are split into segments: a segment starts at a `dn $` assignment line and ends at the next assignment or blank line, so continuation lines belong to the pattern above them. Successful evaluation records each stream's segment of the evaluated code (`Tracker.SetPlaying`, keeping muted/soloed transport state intact); when a block assigns the same stream more than once, the last assignment is the one playing. Whenever the editor content changes, the model recomputes for each stream whether the code last evaluated for it still appears in the editor as one of its segments (modulo whitespace) and flags mismatches as edited: the pattern currently playing is not what the editor shows. This makes `Ctrl-J` (block) and `Ctrl-L` (line) behave consistently: evaluating a stream's full pattern clears its flag, evaluating only part of a multi-line pattern keeps it, and editing the editor afterwards restores it. Hush and GHCi restart clear all recorded playing code, since no pattern keeps playing after either. Unmuting (`Ctrl-U`, or the second press of a mute toggle) restores a muted stream to active only when a pattern is recorded as playing on it; otherwise it returns to idle, so "active" always means a pattern is playing.
 
 Caveats: evaluation is recorded optimistically — a Haskell error reported asynchronously by GHCi does not restore the marker — and transport expressions evaluated as editor text (e.g. a bare `hush` line) are not tracked; the marker reflects only what the TUI evaluated itself. Assignment detection matches `dn $` at the start of a line.
 
-### 3.6 Console Log
+### 3.5 Console Log
 
 A dedicated pane below the status panel on the right side, showing the GHCi session log.
 
@@ -163,7 +150,7 @@ A dedicated pane below the status panel on the right side, showing the GHCi sess
 - Incoming GHCi output is split into lines and auto-scrolls to the bottom; the buffer keeps 500 lines, trimming to 250
 - The right column is split vertically: status panel on top, console log below
 
-### 3.7 Adaptive Layout
+### 3.6 Adaptive Layout
 
 The layout adapts to the terminal size with three modes (`ui.Mode`):
 
@@ -183,7 +170,7 @@ The layout adapts to the terminal size with three modes (`ui.Mode`):
 - In large mode, `Tab`/`Shift-Tab` cycles focus across the three panes as before; the view field is irrelevant.
 - Pane content sizes (`textarea`, `panel`, `console`) are computed from the same width/height accessors regardless of mode, so resize between modes only re-renders.
 
-### 3.8 Visualization Panel
+### 3.7 Visualization Panel
 
 Renders a visual representation of the current pattern cycle.
 
@@ -201,7 +188,7 @@ Renders a visual representation of the current pattern cycle.
 
 **Complexity:** High. This is the most ambitious component and is deferred to Phase 3.
 
-### 3.9 Pattern Tracing Cursor
+### 3.8 Pattern Tracing Cursor
 
 Highlights the mini-notation fragment that is currently sounding, directly in the editor, as the pattern plays. Researched against the installed Tidal 1.10.3 source (`tidal` + `tidal-core` packages).
 
@@ -214,7 +201,7 @@ Highlights the mini-notation fragment that is currently sounding, directly in th
 **Implementation plan:**
 
 1. **Custom boot script** (`boot/BootTidal-triton.hs`, used when the cursor is enabled): a copy of the upstream BootTidal.hs that uses `mkTidalWith` with two targets — SuperDirt unchanged, plus `editorTarget {oName = "charm-cursor", oAddress = "127.0.0.1", oPort = 6013, oLatency = 0.05, oWindow = Nothing, oSchedule = Pre BundleStamp, oHandshake = False, oBusPort = Nothing}` with `[OSCContext "/editor/highlights"]` — and a lowered `cFrameTimespan` (1/50) for responsive updates. The orphan `Tidally` instance is preserved so the boot aliases work. No extra imports are needed: `Sound.Tidal.Boot` re-exports `Sound.Tidal.Context`, which re-exports `Sound.Tidal.Stream` and with it `Target`, `OSC`, `OSCContext`, `superdirtTarget`, `superdirtShape`, and `defaultConfig`. Requires Tidal >= 1.9 (the `Sound.Tidal.Boot` / `mkTidalWith` API).
-2. **Code rewriting at evaluation**: a Go port of `deltaMini` applied to each evaluated block/line (Ctrl-J / Ctrl-L) before writing it to GHCi, using the block's buffer coordinates as offsets. Received spans then point at the live buffer. Unit tests mirror cases from the Haskell implementation. Two wiring details: `extractBlock()` must additionally return the block's starting line (it currently returns only the code text), and the rewrite applies **only** to the text written to GHCi — `markEvaluated` and the edited-marker comparison must keep recording the original text, or the playing-vs-edited logic breaks.
+2. **Code rewriting at evaluation**: a Go port of `deltaMini` applied to each evaluated block/line (Ctrl-J / Ctrl-L) before writing it to GHCi, using the block's buffer coordinates as offsets. Received spans then point at the live buffer. Unit tests mirror cases from the Haskell implementation. Two wiring details: `tidal.ExtractBlock` must additionally return the block's starting line (it currently returns only the code text), and the rewrite applies **only** to the text written to GHCi — `markEvaluated` and the edited-marker comparison must keep recording the original text, or the playing-vs-edited logic breaks.
 3. **OSC listener** (`internal/cursor`): a go-osc `Server` on `127.0.0.1:6013` (configurable) with an `/editor/highlights` handler; decoded highlights are forwarded into the Bubble Tea program over a channel, the same way GHCi output is. Note go-osc decodes OSC floats as Go `float32`.
 4. **Highlight state in the model**: a set of active spans `{stream, line, colStart, colEnd, lastSeenAt}` with refresh-based expiry (see message timing above): a periodic tick drops spans silent for ~2 clock frames. Spans are unioned when events overlap (polymeters). Spans whose positions no longer match the editor are suppressed: streams flagged *edited* (positions go stale once the buffer changes; the existing Tracker segment logic tracks this) and streams whose playing code is not in the editor at all (the pattern text was deleted while it keeps sounding). Highlights clear on hush and GHCi restart alongside the existing playing-state clears, and render only when the editor pane is visible (`editorVisible()`).
 5. **Editor rendering**: vendor the bubbles textarea into `internal/textarea` (MIT; `textarea.go` + the `memoization` subpackage, keeping license headers) with two additions: an exported `YOffset` accessor and a highlight-span list rendered inside the existing `View()` wrap loop (so soft-wrapped spans style correctly), styled by a new theme style (reverse video in the stream's palette color). Post-processing `textarea.View()` was rejected: the scroll offset and wrap grid are unreachable through the public API.
@@ -226,7 +213,7 @@ Highlights the mini-notation fragment that is currently sounding, directly in th
 
 **Note:** README's config sample gains the `[cursor]` section when the feature ships.
 
-### 3.10 File Document
+### 3.9 File Document
 
 Buffer persistence for `.tidal` files (plain Haskell text, normalized to match the editor buffer).
 
@@ -264,9 +251,9 @@ Buffer persistence for `.tidal` files (plain Haskell text, normalized to match t
 - `Ctrl-.` is not a distinct key in bubbletea. `Ctrl-\` is used for hush.
 - `[` / `]` alone conflict with text editing. `Alt-[` / `Alt-]` are used for tempo control.
 - `Shift-F1`–`Shift-F8` are not delivered reliably by terminals (bubbletea defines no shift-F key types), so solo toggles use `Alt-1`–`Alt-8`.
-- `Ctrl-S` (save) and `Ctrl-O` (open) are implemented (see 3.10). Up/down history navigation remains planned for Phase 2.
+- `Ctrl-S` (save) and `Ctrl-O` (open) are implemented (see 3.9). Up/down history navigation remains planned for Phase 2.
 
-**Quit confirmation:** `Ctrl-C` opens a centered modal (`ui.Layout.Overlay` + `ui.Styles.Warning`) instead of quitting immediately. A second `Ctrl-C` (or a SIGINT/`InterruptMsg` when input is not a TTY) quits; `Esc` dismisses the modal. While the modal is open, all other key input is swallowed. The overlay composites the modal over the rendered panes at exact cell boundaries, preserving line widths and the underlying border/text colors. The warning mentions unsaved changes when the buffer differs from its file (see 3.10).
+**Quit confirmation:** `Ctrl-C` opens a centered modal (`ui.Layout.Overlay` + `ui.Styles.Warning`) instead of quitting immediately. A second `Ctrl-C` (or a SIGINT/`InterruptMsg` when input is not a TTY) quits; `Esc` dismisses the modal. While the modal is open, all other key input is swallowed. The overlay composites the modal over the rendered panes at exact cell boundaries, preserving line widths and the underlying border/text colors. The warning mentions unsaved changes when the buffer differs from its file (see 3.9).
 
 ## 5. Configuration
 
@@ -314,30 +301,35 @@ triton/
 ├── start-superdirt.scd              # SuperCollider boot script
 ├── install-superdirt.scd            # SuperDirt installer
 ├── internal/
+│   ├── boot/
+│   │   └── boot.go                   # Boot script resolution + address templating
 │   ├── config/
 │   │   └── config.go                # Configuration loading (TOML + env overrides)
 │   ├── doc/
 │   │   └── doc.go                   # Editor document: .tidal load/save, dirty state
 │   ├── ghci/
-│   │   ├── process.go               # GHCi subprocess management
-│   │   └── process_test.go
+│   │   └── process.go               # GHCi subprocess driver
+│   ├── proc/
+│   │   └── proc.go                  # Shared child-process plumbing (output, done, shutdown)
 │   ├── osc/
 │   │   ├── client.go                # OSC client for Tidal control messages
 │   │   └── client_test.go
 │   ├── superdirt/
-│   │   └── process.go               # SuperCollider/SuperDirt subprocess management
+│   │   └── process.go               # SuperCollider/SuperDirt subprocess driver
 │   ├── model/
 │   │   ├── model.go                 # Top-level Bubble Tea model + keybindings
-│   │   └── model_test.go            # Tests for extractBlock()
+│   │   └── model_test.go
+│   ├── tidal/
+│   │   └── segments.go              # Tidal syntax analysis: block extraction, per-stream segments
 │   ├── status/
 │   │   ├── panel.go                 # Status panel renderer
 │   │   ├── tracker.go               # Manual state tracking
 │   │   └── tracker_test.go
+│   ├── ui/
+│   │   ├── layout.go                # Layout management (split panes, modal overlay)
+│   │   ├── theme.go                 # Color scheme, palette, themes
+│   │   └── styles.go                # Lip Gloss style definitions (incl. warning modal)
 │   └── (viz/                         # Phase 2/3: timeline, snooper)
-├── ui/
-│   ├── layout.go                    # Layout management (split panes, modal overlay)
-│   ├── theme.go                     # Color scheme, palette, themes
-│   └── styles.go                    # Lip Gloss style definitions (incl. warning modal)
 └── examples/
     ├── basic.tidal                  # Example Tidal patterns
     └── advanced.tidal
@@ -357,7 +349,7 @@ Goal: Write and evaluate Tidal code from the terminal, with transport controls.
 - [x] GHCi error display (stderr forwarded to output panel, stdout vs stderr distinguished)
 - [x] Process lifecycle management (restart via Ctrl-R with epoch invalidation, cleanup on exit)
 - [x] SuperDirt auto-start (sclang subprocess, ready detection, cleanup on exit)
-- [x] Block evaluation (extractBlock finds contiguous non-empty lines around cursor)
+- [x] Block evaluation (tidal.ExtractBlock finds contiguous non-empty lines around cursor)
 - [x] Multi-line GHCi evaluation (`:{` / `:}` delimiters)
 - [x] Status panel (stream states, cps, ghci status)
 - [x] Tempo control (Alt-[ / Alt-] to adjust cps via OSC /setcps)
@@ -370,12 +362,12 @@ Goal: Visual feedback on active patterns and richer transport control.
 
 - [x] Solo toggles (Alt-1–Alt-8)
 - [ ] Evaluation history (up/down to recall previously evaluated blocks)
-- [x] File open/save (.tidal files, see 3.10)
+- [x] File open/save (.tidal files, see 3.9)
 - [ ] OSC snooping (read-only tap on port 57120 for real-time event data)
 - [ ] Cycle count display (derived from snooped OSC messages)
 - [x] Shift-Tab to reverse-focus cycle
 - [x] Playing vs edited distinction (`*` marker on streams with unevaluated edits)
-- [x] Pattern tracing cursor (OSCContext listener, `deltaMini` code rewriting, editor span highlighting — see 3.9)
+- [x] Pattern tracing cursor (OSCContext listener, `deltaMini` code rewriting, editor span highlighting — see 3.8)
 
 **Deliverable:** A TUI that shows which patterns are playing, lets you mute/solo individual streams, and recalls evaluation history.
 
@@ -424,7 +416,7 @@ Goal: Real-time pattern visualization.
 | Bubbles textarea lacks syntax highlighting | Poor editing experience | Custom highlighter overlay; or accept plain editing for phase 1 |
 | GHCi process crashes | TUI becomes non-functional | Auto-detect process exit, display error, offer restart key (Ctrl-R) with epoch counter to invalidate stale goroutines |
 | OSC snooping requires raw socket access | May need elevated permissions | Make snooping optional; default to manual tracking |
-| Multi-line Tidal code evaluation is tricky | Blocks not evaluated correctly | Use `:{` ... `:}` delimiters; extractBlock() finds contiguous non-empty lines around cursor |
+| Multi-line Tidal code evaluation is tricky | Blocks not evaluated correctly | Use `:{` ... `:}` delimiters; tidal.ExtractBlock finds contiguous non-empty lines around cursor |
 | SuperDirt startup is slow | User waits on launch | 30-second timeout with warning if not ready; continue anyway |
 | Concurrent channel access in subprocess managers | Double-close panics, goroutine leaks | Mutex-protected close, WaitGroup for reader goroutines, epoch counter for restart invalidation |
 

@@ -1,10 +1,9 @@
 package superdirt
 
 import (
-	"io"
-	"strings"
 	"testing"
-	"time"
+
+	"github.com/pshickeydev/triton/internal/proc"
 )
 
 func TestIsReadyLine(t *testing.T) {
@@ -27,22 +26,14 @@ func TestIsReadyLine(t *testing.T) {
 	}
 }
 
-func TestReadPipeDetectsReadyInSubstring(t *testing.T) {
-	input := "some prefix SuperDirt ready trailing text\n"
-	r := io.NopCloser(strings.NewReader(input))
+func TestObserveDetectsReadyInSubstring(t *testing.T) {
+	p := &Process{readyCh: make(chan struct{})}
 
-	p := &Process{
-		outputCh: make(chan OutputMsg, outputChanBuffer),
-		done:     make(chan struct{}),
-		readyCh:  make(chan struct{}),
-	}
-
-	p.outputWg.Add(1)
-	p.readPipe(r)
+	p.observe(proc.Line{Text: "some prefix SuperDirt ready trailing text"})
 
 	select {
 	case <-p.readyCh:
-	case <-time.After(time.Second):
+	default:
 		t.Fatal("readyCh not closed: readiness not detected from substring match")
 	}
 }
@@ -66,19 +57,10 @@ func TestIsSc3PluginsMissing(t *testing.T) {
 	}
 }
 
-func TestReadPipeDetectsMissingSc3Plugins(t *testing.T) {
-	input := "*** Dirt could not load some synths from default-synths.scd, because sc3plugins are necessary and missing.\nSuperDirt ready\n"
-	r := io.NopCloser(strings.NewReader(input))
+func TestObserveDetectsMissingSc3Plugins(t *testing.T) {
+	p := &Process{warnCh: make(chan string, warnChanBuffer), readyCh: make(chan struct{})}
 
-	p := &Process{
-		outputCh: make(chan OutputMsg, outputChanBuffer),
-		warnCh:   make(chan string, warnChanBuffer),
-		done:     make(chan struct{}),
-		readyCh:  make(chan struct{}),
-	}
-
-	p.outputWg.Add(1)
-	p.readPipe(r)
+	p.observe(proc.Line{Text: "*** Dirt could not load some synths from default-synths.scd, because sc3plugins are necessary and missing."})
 
 	select {
 	case got := <-p.warnCh:
@@ -90,44 +72,14 @@ func TestReadPipeDetectsMissingSc3Plugins(t *testing.T) {
 	}
 }
 
-func TestReadPipeNoWarningWhenSc3PluginsPresent(t *testing.T) {
-	p := &Process{
-		outputCh: make(chan OutputMsg, outputChanBuffer),
-		warnCh:   make(chan string, warnChanBuffer),
-		done:     make(chan struct{}),
-		readyCh:  make(chan struct{}),
-	}
+func TestObserveNoWarningWhenSc3PluginsPresent(t *testing.T) {
+	p := &Process{warnCh: make(chan string, warnChanBuffer), readyCh: make(chan struct{})}
 
-	p.outputWg.Add(1)
-	p.readPipe(io.NopCloser(strings.NewReader("SuperDirt ready\n")))
+	p.observe(proc.Line{Text: "SuperDirt ready"})
 
 	select {
 	case got := <-p.warnCh:
 		t.Errorf("unexpected warning %q", got)
 	default:
-	}
-}
-
-func TestReadPipe_KeepsNewestWhenFull(t *testing.T) {
-	p := &Process{outputCh: make(chan OutputMsg, 2)}
-	p.outputWg.Add(1)
-
-	p.readPipe(io.NopCloser(strings.NewReader("l0\nl1\nl2\nl3\nl4\n")))
-
-	var got []string
-	for {
-		select {
-		case msg := <-p.outputCh:
-			got = append(got, msg.Text)
-			continue
-		default:
-		}
-		break
-	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 buffered messages, got %d", len(got))
-	}
-	if got[0] != "l3" || got[1] != "l4" {
-		t.Errorf("expected newest lines l3,l4 kept, got %v", got)
 	}
 }

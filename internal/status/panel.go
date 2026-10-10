@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/pshickeydev/triton/ui"
+	"github.com/pshickeydev/triton/internal/ui"
 )
 
 const (

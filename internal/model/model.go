@@ -2,7 +2,6 @@ package model
 
 import (
 	"fmt"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,10 +15,10 @@ import (
 	"github.com/pshickeydev/triton/internal/deltamini"
 	"github.com/pshickeydev/triton/internal/doc"
 	"github.com/pshickeydev/triton/internal/ghci"
-	"github.com/pshickeydev/triton/internal/osc"
 	"github.com/pshickeydev/triton/internal/status"
 	"github.com/pshickeydev/triton/internal/textarea"
-	"github.com/pshickeydev/triton/ui"
+	"github.com/pshickeydev/triton/internal/tidal"
+	"github.com/pshickeydev/triton/internal/ui"
 )
 
 const (
@@ -55,15 +54,11 @@ const (
 	// mute and Alt-digit solo shortcuts.
 	keyStreamCount = 8
 
-	patternAssign = `^\s*d(\d+)\s*\$`
-
 	// Highlight spans live while Tidal keeps refreshing them: they are
 	// dropped after ~2 silent clock frames, checked every frame.
 	spanTTL  = 80 * time.Millisecond
 	spanTick = 40 * time.Millisecond
 )
-
-var patternRe = regexp.MustCompile(patternAssign)
 
 var (
 	muteKeys = streamKeys("f")
@@ -120,8 +115,30 @@ type ghciDoneMsg struct {
 
 // ghciRestartedMsg delivers the outcome of an asynchronous GHCi restart.
 type ghciRestartedMsg struct {
-	proc *ghci.Process
+	proc Evaluator
 	err  error
+}
+
+// Evaluator is the GHCi session the TUI drives: code goes in, output
+// comes back out.
+type Evaluator interface {
+	Output() <-chan ghci.OutputMsg
+	Done() <-chan struct{}
+	Evaluate(code string) error
+	EvaluateMulti(code string) error
+	Close() error
+}
+
+// Transport sends Tidal transport control commands over OSC.
+type Transport interface {
+	Hush() error
+	MuteAll() error
+	UnmuteAll() error
+	Mute(streamNum int) error
+	Unmute(streamNum int) error
+	Solo(streamNum int) error
+	Unsolo(streamNum int) error
+	SetTempo(cps float64) error
 }
 
 // sclangWarnMsg carries a startup warning from the SuperDirt process,
@@ -156,8 +173,9 @@ type Model struct {
 	view        viewArea
 	width       int
 	height      int
-	ghciProc    *ghci.Process
-	oscClient   *osc.Client
+	ghciProc    Evaluator
+	oscClient   Transport
+	spawnGhci   func(GhciConfig) (Evaluator, error)
 	tracker     *status.Tracker
 	panel       *status.Panel
 	console     *status.Log
@@ -189,7 +207,12 @@ type GhciConfig struct {
 	WorkingDir string
 }
 
-func NewModel(theme ui.Theme, ghciProc *ghci.Process, oscClient *osc.Client, tracker *status.Tracker, panel *status.Panel, console *status.Log, ghciCfg GhciConfig, opts ...Option) Model {
+// newGhci spawns the GHCi session a restart reconnects to.
+func newGhci(cfg GhciConfig) (Evaluator, error) {
+	return ghci.New(cfg.Executable, cfg.BootScript, cfg.WorkingDir)
+}
+
+func NewModel(theme ui.Theme, ghciProc Evaluator, oscClient Transport, tracker *status.Tracker, panel *status.Panel, console *status.Log, ghciCfg GhciConfig, opts ...Option) Model {
 	styles := ui.NewStyles(theme)
 	layout := ui.NewLayout()
 
@@ -209,6 +232,7 @@ func NewModel(theme ui.Theme, ghciProc *ghci.Process, oscClient *osc.Client, tra
 		view:        viewEditor,
 		ghciProc:    ghciProc,
 		oscClient:   oscClient,
+		spawnGhci:   newGhci,
 		tracker:     tracker,
 		panel:       panel,
 		console:     console,
@@ -753,7 +777,7 @@ func (m *Model) dropStaleSpans() {
 			return true
 		}
 		segs, inEditor := segments[span.Stream]
-		return !inEditor || !containsSegment(segs, normalizeCode(code))
+		return !inEditor || !containsSegment(segs, tidal.Normalize(code))
 	})
 }
 
@@ -786,7 +810,7 @@ func (m Model) handleEvaluate(mode evalMode) (tea.Model, tea.Cmd) {
 		}
 		startLine = lineNum
 	} else {
-		code, startLine = extractBlock(lines, lineNum)
+		code, startLine = tidal.ExtractBlock(lines, lineNum)
 	}
 
 	if strings.TrimSpace(code) == "" {
@@ -822,7 +846,7 @@ func (m Model) evaluate(code string, startLine int) error {
 // code block assigns the same stream more than once, the last assignment
 // is what ends up playing.
 func (m Model) markEvaluated(code string) {
-	for n, segs := range streamSegments(code) {
+	for n, segs := range tidal.Segments(code) {
 		m.tracker.SetPlaying(n, segs[len(segs)-1])
 	}
 	m.refreshEdited()
@@ -842,7 +866,7 @@ func (m *Model) refreshEdited() {
 			continue
 		}
 		evaluated, wasPlaying := playing[n]
-		if !wasPlaying || !containsSegment(segs, normalizeCode(evaluated)) {
+		if !wasPlaying || !containsSegment(segs, tidal.Normalize(evaluated)) {
 			m.tracker.SetEdited(n)
 			continue
 		}
@@ -860,102 +884,10 @@ func containsSegment(segs []string, normalizedCode string) bool {
 func (m *Model) streamSegs() map[int][]string {
 	value := m.textarea.Value()
 	if m.segs == nil || value != m.segsFor {
-		m.segs = normalizedSegments(streamSegments(value))
+		m.segs = tidal.Segmented(value)
 		m.segsFor = value
 	}
 	return m.segs
-}
-
-// normalizedSegments collapses whitespace in every segment.
-func normalizedSegments(segments map[int][]string) map[int][]string {
-	for _, segs := range segments {
-		for i, seg := range segs {
-			segs[i] = normalizeCode(seg)
-		}
-	}
-	return segments
-}
-
-// streamSegments splits code into per-stream pattern segments. A segment
-// starts at a d-stream assignment line and runs until the next assignment,
-// a blank line, or the end of the code, so continuation lines belong to the
-// pattern above them. Streams assigned more than once keep every segment,
-// in order.
-func streamSegments(code string) map[int][]string {
-	segments := make(map[int][]string)
-	stream := 0
-	var current []string
-	flush := func() {
-		if stream > 0 && len(current) > 0 {
-			segments[stream] = append(segments[stream], strings.Join(current, "\n"))
-		}
-		current = nil
-	}
-	for line := range strings.SplitSeq(code, "\n") {
-		if strings.TrimSpace(line) == "" {
-			flush()
-			stream = 0
-			continue
-		}
-		if n, ok := patternStream(line); ok {
-			flush()
-			stream = n
-		}
-		if stream > 0 {
-			current = append(current, line)
-		}
-	}
-	flush()
-	return segments
-}
-
-// patternStream reports the d-stream a line assigns, e.g. d1 $ sound "bd".
-func patternStream(line string) (int, bool) {
-	match := patternRe.FindStringSubmatch(line)
-	if match == nil {
-		return 0, false
-	}
-	n, err := strconv.Atoi(match[1])
-	if err != nil {
-		return 0, false
-	}
-	return n, true
-}
-
-// normalizeCode collapses whitespace so patterns that differ only in
-// indentation and spacing compare as equal.
-func normalizeCode(code string) string {
-	lines := strings.Split(code, "\n")
-	for i, line := range lines {
-		lines[i] = strings.Join(strings.Fields(line), " ")
-	}
-	return strings.Join(lines, "\n")
-}
-
-func extractBlock(lines []string, cursorLine int) (string, int) {
-	if len(lines) == 0 {
-		return "", 0
-	}
-	if cursorLine < 0 {
-		cursorLine = 0
-	}
-	if cursorLine >= len(lines) {
-		cursorLine = len(lines) - 1
-	}
-
-	if strings.TrimSpace(lines[cursorLine]) == "" {
-		return "", cursorLine
-	}
-
-	start := cursorLine
-	for start > 0 && strings.TrimSpace(lines[start-1]) != "" {
-		start--
-	}
-	end := cursorLine
-	for end < len(lines)-1 && strings.TrimSpace(lines[end+1]) != "" {
-		end++
-	}
-	return strings.Join(lines[start:end+1], "\n"), start
 }
 
 func (m Model) handleHush() (tea.Model, tea.Cmd) {
@@ -1056,11 +988,12 @@ func (m Model) handleRestartGhci() (tea.Model, tea.Cmd) {
 
 	old := m.ghciProc
 	cfg := m.ghciCfg
+	spawn := m.spawnGhci
 	return m, func() tea.Msg {
 		if old != nil {
 			old.Close()
 		}
-		proc, err := ghci.New(cfg.Executable, cfg.BootScript, cfg.WorkingDir)
+		proc, err := spawn(cfg)
 		return ghciRestartedMsg{proc: proc, err: err}
 	}
 }

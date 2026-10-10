@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/pshickeydev/triton/ui"
+	"github.com/pshickeydev/triton/internal/ui"
 )
 
 const (

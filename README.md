@@ -226,24 +226,26 @@ triton/
 ├── start-superdirt.scd            # SuperCollider boot script (embedded in the binary)
 ├── install-superdirt.scd          # SuperDirt installer
 ├── internal/
+│   ├── boot/boot.go               # Boot script resolution + address templating
 │   ├── config/config.go           # TOML config + env overrides
 │   ├── doc/doc.go                 # Editor document: .tidal load/save, dirty state
-│   ├── ghci/process.go            # GHCi subprocess manager
-│   ├── osc/client.go             # OSC client (Tidal control)
-│   ├── superdirt/process.go       # SuperCollider/SuperDirt manager
+│   ├── ghci/process.go            # GHCi subprocess driver
+│   ├── proc/proc.go               # Shared child-process plumbing
+│   ├── osc/client.go              # OSC client (Tidal control)
+│   ├── superdirt/process.go       # SuperCollider/SuperDirt driver
 │   ├── model/model.go             # Top-level Bubble Tea model
 │   ├── cursor/listener.go         # OSC listener for Tidal highlight messages
 │   ├── cursor/spans.go            # Active highlight span state
 │   ├── deltamini/deltamini.go     # Go port of Tidal's deltaMini rewrite
+│   ├── tidal/segments.go          # Tidal syntax analysis (blocks, per-stream segments)
 │   ├── status/tracker.go          # Manual stream state tracking
 │   ├── status/panel.go            # Status panel renderer
 │   ├── status/console.go          # Console log renderer
+│   ├── ui/theme.go                # Dark/light themes + color palette
+│   ├── ui/styles.go               # Lip Gloss style definitions
+│   ├── ui/layout.go               # Adaptive layout: large (editor | status+console) or small (swappable single view)
 │   └── textarea/                  # Vendored bubbles textarea with
 │                                  #   highlight-span rendering
-├── ui/
-│   ├── theme.go                   # Dark/light themes + color palette
-│   ├── styles.go                  # Lip Gloss style definitions
-│   └── layout.go                  # Adaptive layout: large (editor | status+console) or small (swappable single view)
 └── examples/
     ├── basic.tidal
     └── advanced.tidal

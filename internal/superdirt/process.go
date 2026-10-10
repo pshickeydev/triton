@@ -1,28 +1,21 @@
+// Package superdirt manages the SuperCollider/SuperDirt subprocess that
+// synthesizes triton's audio.
 package superdirt
 
 import (
-	"bufio"
-	"errors"
-	"fmt"
-	"io"
-	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/pshickeydev/triton/internal/chbuf"
+	"github.com/pshickeydev/triton/internal/proc"
 )
 
 const (
-	outputChanBuffer  = 256
-	scannerInitialBuf = 64 * 1024
-	scannerMaxBuf     = 1024 * 1024
-	warnChanBuffer    = 8
-	shutdownTimeout   = 5 * time.Second
-	bootWaitTimeout   = 30 * time.Second
-	readyMarker       = "SuperDirt ready"
-	quitCmd           = "0.exit\n"
+	warnChanBuffer  = 8
+	shutdownTimeout = 5 * time.Second
+	bootWaitTimeout = 30 * time.Second
+	readyMarker     = "SuperDirt ready"
+	quitCmd         = "0.exit\n"
 
 	// sc3PluginsMarker matches the warning SuperDirt prints at boot when it
 	// skips its synth sound bank library because sc3-plugins is missing.
@@ -34,90 +27,49 @@ const (
 // silent until a matching sc3-plugins build is installed.
 const sc3PluginsWarning = "SuperDirt: sc3-plugins not found; synth sound banks (supermandolin, supergong, ...) will be silent; install sc3-plugins matching your SuperCollider version and restart"
 
-type OutputMsg struct {
-	Text string
-}
+// OutputMsg is one line of sclang output.
+type OutputMsg = proc.Line
 
+// Process drives an sclang session booting SuperDirt from a script.
 type Process struct {
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	outputCh chan OutputMsg
-	warnCh   chan string
-	outputWg sync.WaitGroup
-	done     chan struct{}
-	mu       sync.Mutex
-	running  bool
-	readyCh  chan struct{}
+	handle  *proc.Handle
+	warnCh  chan string
+	readyCh chan struct{}
+	mu      sync.Mutex
 }
 
+// New starts sclang with the SuperDirt boot script.
 func New(executable, scriptPath string) (*Process, error) {
-	cmd := exec.Command(executable, scriptPath)
-	setProcGroup(cmd)
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("creating stdin pipe: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("creating stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("creating stderr pipe: %w", err)
-	}
-
 	p := &Process{
-		cmd:      cmd,
-		stdin:    stdin,
-		outputCh: make(chan OutputMsg, outputChanBuffer),
-		warnCh:   make(chan string, warnChanBuffer),
-		done:     make(chan struct{}),
-		readyCh:  make(chan struct{}),
+		warnCh:  make(chan string, warnChanBuffer),
+		readyCh: make(chan struct{}),
 	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("starting sclang: %w", err)
+	h, err := proc.Start(proc.Options{
+		Name:      "sclang",
+		Exec:      executable,
+		Args:      []string{scriptPath},
+		QuitCmd:   quitCmd,
+		Timeout:   shutdownTimeout,
+		Configure: setProcGroup,
+		KillCmd:   killProcGroup,
+		OnLine:    p.observe,
+		OnExit:    func() { close(p.warnCh) },
+	})
+	if err != nil {
+		return nil, err
 	}
-	p.running = true
-
-	p.outputWg.Add(2)
-	go p.readPipe(stdout)
-	go p.readPipe(stderr)
-	go func() {
-		cmd.Wait()
-		p.outputWg.Wait()
-		// running flips and the channels close under the mutex so Close
-		// cannot write to stdin or send on a closed channel concurrently.
-		p.mu.Lock()
-		p.running = false
-		close(p.outputCh)
-		close(p.warnCh)
-		close(p.done)
-		p.mu.Unlock()
-	}()
-
+	p.handle = h
 	return p, nil
 }
 
-func (p *Process) readPipe(r io.ReadCloser) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, scannerInitialBuf), scannerMaxBuf)
-	for scanner.Scan() {
-		line := scanner.Text()
-		chbuf.Send(p.outputCh, OutputMsg{Text: line})
-		if isReadyLine(line) {
-			p.markReady()
-		}
-		if isSc3PluginsMissing(line) {
-			p.sendWarning(sc3PluginsWarning)
-		}
+// observe inspects each output line for boot readiness and problems.
+func (p *Process) observe(line proc.Line) {
+	if isReadyLine(line.Text) {
+		p.markReady()
 	}
-	// A closed pipe on shutdown is not a read failure.
-	if err := scanner.Err(); err != nil && !errors.Is(err, os.ErrClosed) {
-		chbuf.Send(p.outputCh, OutputMsg{Text: "reading sclang output: " + err.Error()})
+	if isSc3PluginsMissing(line.Text) {
+		p.sendWarning(sc3PluginsWarning)
 	}
-	p.outputWg.Done()
 }
 
 func isReadyLine(line string) bool {
@@ -147,19 +99,22 @@ func (p *Process) markReady() {
 	}
 }
 
+// WaitForReady blocks until the boot script reports readiness, the boot
+// times out, or the process exits.
 func (p *Process) WaitForReady() bool {
 	select {
 	case <-p.readyCh:
 		return true
 	case <-time.After(bootWaitTimeout):
 		return false
-	case <-p.done:
+	case <-p.handle.Done():
 		return false
 	}
 }
 
+// Output delivers sclang's output lines; it closes when the process exits.
 func (p *Process) Output() <-chan OutputMsg {
-	return p.outputCh
+	return p.handle.Output()
 }
 
 // Warnings delivers notable problems detected in SuperDirt's boot output,
@@ -169,34 +124,13 @@ func (p *Process) Warnings() <-chan string {
 	return p.warnCh
 }
 
+// Done closes when the sclang process has exited and output is drained.
 func (p *Process) Done() <-chan struct{} {
-	return p.done
+	return p.handle.Done()
 }
 
-func (p *Process) Running() bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.running
-}
-
+// Close asks sclang to quit and waits up to five seconds before killing
+// its process group.
 func (p *Process) Close() error {
-	p.mu.Lock()
-	if !p.running {
-		p.mu.Unlock()
-		return nil
-	}
-	if _, err := p.stdin.Write([]byte(quitCmd)); err != nil {
-		// The quit command never arrived; report it and let the shutdown
-		// timeout fall back to killing the process group.
-		chbuf.Send(p.outputCh, OutputMsg{Text: "sending quit command: " + err.Error()})
-	}
-	p.stdin.Close()
-	p.mu.Unlock()
-
-	select {
-	case <-p.done:
-		return nil
-	case <-time.After(shutdownTimeout):
-		return killProcGroup(p.cmd)
-	}
+	return p.handle.Close()
 }
