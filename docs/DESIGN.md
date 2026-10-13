@@ -91,7 +91,7 @@ Sends control messages to Tidal's inbound OSC port (127.0.0.1:6010).
 - Send `/setcps <float>` — set the tempo (cycles per second)
 
 **Implementation:**
-- Library: `github.com/hypebeast/go-osc` (mature Go OSC library)
+- Library: `github.com/pshickeydev/go-osc` (mature Go OSC library)
 - Tidal's OSC address format: `/mute`/`/unmute`/`/solo`/`/unsolo` take an `Int32` pattern ID that Tidal stringifies to match the pattern name ("1".."16"), so n is 1-indexed; `/setcps` takes a single `Float`
 - All messages sent over UDP to 127.0.0.1:6010 (configurable)
 - OSC addresses, max stream number, and error messages are extracted to constants
@@ -393,7 +393,7 @@ Goal: Real-time pattern visualization.
 | `github.com/charmbracelet/lipgloss` | Styling and layout | latest |
 | `github.com/charmbracelet/bubbles` | textarea component | latest |
 | `github.com/charmbracelet/harmonica` | Spring animation (phase 3) | latest |
-| `github.com/hypebeast/go-osc` | OSC client for Tidal control | latest |
+| `github.com/pshickeydev/go-osc` | OSC client for Tidal control | latest |
 | `github.com/BurntSushi/toml` | Configuration parsing | latest |
 
 ### External dependencies (user's system)

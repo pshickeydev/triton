@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hypebeast/go-osc/osc"
+	"github.com/pshickeydev/go-osc/osc"
 )
 
 func captureMessage(t *testing.T, send func(*Client) error) *osc.Message {

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hypebeast/go-osc/osc"
+	"github.com/pshickeydev/go-osc/osc"
 )
 
 // freePort grabs an available UDP port for the listener to bind.

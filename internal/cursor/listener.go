@@ -18,7 +18,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/hypebeast/go-osc/osc"
+	"github.com/pshickeydev/go-osc/osc"
 
 	"github.com/pshickeydev/triton/internal/tidal"
 )

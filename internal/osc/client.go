@@ -3,7 +3,7 @@ package osc
 import (
 	"fmt"
 
-	"github.com/hypebeast/go-osc/osc"
+	"github.com/pshickeydev/go-osc/osc"
 
 	"github.com/pshickeydev/triton/internal/tidal"
 )
