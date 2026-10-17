@@ -84,7 +84,7 @@ func (m Model) fileLabel() string {
 
 // dirty reports whether the buffer differs from the bound document.
 func (m Model) dirty() bool {
-	return m.doc.Dirty(m.textarea.Value())
+	return m.doc.Dirty(m.documentText())
 }
 
 func (m Model) handleSave() (tea.Model, tea.Cmd) {
@@ -179,7 +179,7 @@ func (m Model) loadFile(path string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) saveFile(path string) (tea.Model, tea.Cmd) {
-	if err := m.doc.Save(path, m.textarea.Value()); err != nil {
+	if err := m.doc.Save(path, m.documentText()); err != nil {
 		m.console.AddError(errPrefix + errSave + err.Error())
 		return m, nil
 	}

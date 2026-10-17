@@ -134,3 +134,49 @@ func TestUnsolo_InvalidStream(t *testing.T) {
 		t.Fatal("expected error for stream 0")
 	}
 }
+
+// sourcePort reads one datagram and reports the sender's port, which is how
+// the test can tell whether the client reused its socket.
+func sourcePort(t *testing.T, conn net.PacketConn) int {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("setting read deadline: %v", err)
+	}
+	buf := make([]byte, 65535)
+	_, src, err := conn.ReadFrom(buf)
+	if err != nil {
+		t.Fatalf("reading OSC packet: %v", err)
+	}
+	return src.(*net.UDPAddr).Port
+}
+
+func TestClientReusesOneSocket(t *testing.T) {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listening for OSC packets: %v", err)
+	}
+	defer conn.Close()
+
+	client := New("127.0.0.1", conn.LocalAddr().(*net.UDPAddr).Port)
+	defer client.Close()
+
+	if err := client.Mute(1); err != nil {
+		t.Fatalf("first send: %v", err)
+	}
+	first := sourcePort(t, conn)
+
+	if err := client.Mute(2); err != nil {
+		t.Fatalf("second send: %v", err)
+	}
+	if second := sourcePort(t, conn); second != first {
+		t.Errorf("client should reuse one socket, dialed again: %d -> %d", first, second)
+	}
+
+	client.Close()
+	if err := client.Mute(3); err != nil {
+		t.Fatalf("sending after Close should re-dial: %v", err)
+	}
+	if third := sourcePort(t, conn); third == first {
+		t.Errorf("expected a fresh socket after Close, got port %d again", third)
+	}
+}

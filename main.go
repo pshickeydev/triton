@@ -70,6 +70,7 @@ func main() {
 	}
 
 	var scProc *superdirt.Process
+	var scReady chan bool
 	if cfg.SuperDirt.AutoStart {
 		script, cleanupScript, err := boot.SuperDirt(cfg.SuperDirt.BootScript, superdirtBootScript)
 		if err != nil {
@@ -79,7 +80,6 @@ func main() {
 		defer cleanupScript()
 		cfg.SuperDirt.BootScript = script
 
-		fmt.Fprintf(os.Stderr, "starting SuperDirt...\n")
 		scProc, err = superdirt.New(cfg.SuperDirt.Executable, cfg.SuperDirt.BootScript)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to start sclang: %v\n", err)
@@ -90,11 +90,11 @@ func main() {
 			scProc.Close()
 		}()
 
-		if !scProc.WaitForReady() {
-			fmt.Fprintf(os.Stderr, "warning: SuperDirt did not signal ready within timeout, continuing anyway\n")
-		} else {
-			fmt.Fprintf(os.Stderr, "SuperDirt ready\n")
-		}
+		// The editor and GHCi start without blocking on the audio engine;
+		// readiness is reported in the console when it arrives. The channel
+		// is buffered so this goroutine never outlives the handoff.
+		scReady = make(chan bool, 1)
+		go func() { scReady <- scProc.WaitForReady() }()
 	}
 
 	bootScript := cfg.GHCi.BootScript
@@ -125,6 +125,7 @@ func main() {
 	}()
 
 	oscClient := osc.New(cfg.OSC.TidalControlHost, cfg.OSC.TidalControlPort)
+	defer oscClient.Close()
 
 	tracker := status.NewTracker(cfg.UI.VisibleStreams)
 	tracker.SetCPS(cfg.UI.DefaultTempo)
@@ -142,7 +143,7 @@ func main() {
 
 	opts := []model.Option{model.WithSclang(cfg.SuperDirt.AutoStart), model.WithDocument(document)}
 	if cfg.SuperDirt.AutoStart {
-		opts = append(opts, model.WithSclangWarnings(scProc.Warnings()))
+		opts = append(opts, model.WithSclangWarnings(scProc.Warnings()), model.WithSclangReady(scReady))
 	}
 	if cfg.Cursor.Enabled {
 		listener := cursor.NewListener(cfg.Cursor.Host, cfg.Cursor.Port)

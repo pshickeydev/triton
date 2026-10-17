@@ -73,6 +73,9 @@
             version = "0.1.0";
             src = ./.;
             vendorHash = "sha256-khfl2gO7OcaDyJpskIn0Og5VP5K6tC/DXz8uCD+pD68=";
+            # Stripping symbols and DWARF shrinks the binary by about a third;
+            # Go panics still name functions without them.
+            ldflags = [ "-s" "-w" ];
             nativeBuildInputs = [ pkgs.makeWrapper ];
             postInstall = ''
                 install -Dm644 start-superdirt.scd install-superdirt.scd -t $out/share/triton

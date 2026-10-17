@@ -38,10 +38,13 @@ const (
 	errMuteToggle        = "mute toggle error: "
 	errSoloToggle        = "solo toggle error: "
 	errTempo             = "tempo error: "
+	errSuperdirtTimeout  = "SuperDirt did not signal ready before the boot timeout, continuing anyway"
 	errGhciRestart       = "failed to restart ghci: "
 	errCursorListener    = "cursor listener: "
 	msgGhciRestarting    = "restarting GHCi..."
 	msgGhciRestarted     = "GHCi restarted"
+	msgSuperdirtStarting = statusPrefix + "starting SuperDirt..."
+	msgSuperdirtReady    = statusPrefix + "SuperDirt ready"
 	quitWarningText      = "Press Ctrl-C again to quit, Esc to cancel"
 	quitDirtyWarningText = "Unsaved changes. " + quitWarningText
 	shutdownText         = "Closing GHCi..."
@@ -53,6 +56,10 @@ const (
 	// keyStreamCount is the number of d-streams reachable through F-key
 	// mute and Alt-digit solo shortcuts.
 	keyStreamCount = 8
+
+	// highlightBatchMax bounds how many spans one update drains from the
+	// listener channel, so a long burst cannot starve the event loop.
+	highlightBatchMax = 64
 
 	// Highlight spans live while Tidal keeps refreshing them: they are
 	// dropped after ~2 silent clock frames, checked every frame.
@@ -147,9 +154,18 @@ type sclangWarnMsg struct {
 	text string
 }
 
+// sclangReadyMsg reports SuperDirt's boot readiness; ok is false when the
+// boot timed out or the process exited before signaling.
+type sclangReadyMsg struct {
+	ok bool
+}
+
 // highlightMsg carries one decoded OSCContext message from Tidal.
-type highlightMsg struct {
-	span cursor.Highlight
+// highlightsMsg carries the decoded highlight spans drained from the
+// listener channel in one batch, so a burst of OSC messages costs one
+// update instead of one per span.
+type highlightsMsg struct {
+	spans []cursor.Highlight
 }
 
 // spanTickMsg expires highlight spans that stopped being refreshed.
@@ -164,8 +180,27 @@ type cursorErrMsg struct {
 	err error
 }
 
+// buffer caches the flattened editor text against the buffer's revision, so
+// the per-frame dirty check and segmentation do not rebuild the whole
+// document on every message.
+type buffer struct {
+	revision uint64
+	text     string
+}
+
+// helpBarCache remembers the rendered help bar, which only changes with the
+// help text, the layout mode, and the terminal width.
+type helpBarCache struct {
+	text  string
+	mode  ui.Mode
+	width int
+	bar   string
+}
+
 type Model struct {
 	textarea    textarea.Model
+	buffer      *buffer
+	helpCache   *helpBarCache
 	layout      *ui.Layout
 	styles      ui.Styles
 	theme       ui.Theme
@@ -189,11 +224,13 @@ type Model struct {
 	confirm     confirmKind
 	pendingPath string
 	sclang      bool
+	scReadyCh   <-chan bool
 	epoch       int
 	restarting  bool
 	spans       cursor.Spans
+	spanStyles  []lipgloss.Style
 	segs        map[int][]string
-	segsFor     string
+	segsRev     uint64
 	hlCh        <-chan cursor.Highlight
 	warnCh      <-chan string
 	cursorErr   <-chan error
@@ -225,6 +262,8 @@ func NewModel(theme ui.Theme, ghciProc Evaluator, oscClient Transport, tracker *
 
 	m := Model{
 		textarea:    ta,
+		buffer:      &buffer{},
+		helpCache:   &helpBarCache{},
 		layout:      layout,
 		styles:      styles,
 		theme:       theme,
@@ -239,6 +278,7 @@ func NewModel(theme ui.Theme, ghciProc Evaluator, oscClient Transport, tracker *
 		ghciCfg:     ghciCfg,
 		epoch:       0,
 		doc:         doc.New(),
+		spanStyles:  newSpanStyles(theme),
 		promptInput: newPromptInput(),
 	}
 	for _, opt := range opts {
@@ -280,6 +320,19 @@ func WithSclangWarnings(warnings <-chan string) Option {
 	}
 }
 
+// WithSclangReady reports SuperDirt's boot readiness to the console once it
+// arrives, so the TUI shows up before the audio engine finishes booting. A
+// nil channel means no engine is being booted, and nothing is logged.
+func WithSclangReady(ready <-chan bool) Option {
+	return func(m *Model) {
+		if ready == nil {
+			return
+		}
+		m.scReadyCh = ready
+		m.console.AddOutput(msgSuperdirtStarting)
+	}
+}
+
 // WithDocument binds the editor to a document and preloads its content
 // into the buffer.
 func WithDocument(d *doc.Doc) Option {
@@ -294,6 +347,9 @@ func (m Model) Init() tea.Cmd {
 	if m.warnCh != nil {
 		cmds = append(cmds, m.waitForSclangWarning())
 	}
+	if m.scReadyCh != nil {
+		cmds = append(cmds, m.waitForSclangReady())
+	}
 	if m.cursorOn {
 		cmds = append(cmds, m.waitForHighlights())
 		if m.cursorErr != nil {
@@ -301,6 +357,14 @@ func (m Model) Init() tea.Cmd {
 		}
 	}
 	return tea.Batch(cmds...)
+}
+
+// waitForSclangReady waits for SuperDirt's boot result, delivered once.
+func (m Model) waitForSclangReady() tea.Cmd {
+	return func() tea.Msg {
+		ok := <-m.scReadyCh
+		return sclangReadyMsg{ok: ok}
+	}
 }
 
 func (m Model) waitForSclangWarning() tea.Cmd {
@@ -313,13 +377,28 @@ func (m Model) waitForSclangWarning() tea.Cmd {
 	}
 }
 
+// waitForHighlights blocks for the next highlight, then drains the channel
+// into one batch: Tidal re-sends every fragment's position on every clock
+// tick, so spans arrive in bursts and a burst costs one update.
 func (m Model) waitForHighlights() tea.Cmd {
 	return func() tea.Msg {
 		hl, ok := <-m.hlCh
 		if !ok {
 			return cursorDoneMsg{}
 		}
-		return highlightMsg{span: hl}
+		spans := []cursor.Highlight{hl}
+		for len(spans) < highlightBatchMax {
+			select {
+			case hl, ok := <-m.hlCh:
+				if !ok {
+					return highlightsMsg{spans: spans}
+				}
+				spans = append(spans, hl)
+			default:
+				return highlightsMsg{spans: spans}
+			}
+		}
+		return highlightsMsg{spans: spans}
 	}
 }
 
@@ -502,13 +581,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.console.AddError(msg.text)
 		cmds = append(cmds, m.waitForSclangWarning())
 
-	case highlightMsg:
+	case sclangReadyMsg:
+		if msg.ok {
+			m.console.AddOutput(msgSuperdirtReady)
+		} else {
+			m.console.AddError(errSuperdirtTimeout)
+		}
+
+	case highlightsMsg:
 		if !m.cursorOn {
 			break
 		}
-		if !m.tracker.Edited()[msg.span.Stream] {
-			m.spans.Add(msg.span, time.Now())
+		now := time.Now()
+		edited := m.tracker.Edited()
+		for _, hl := range msg.spans {
+			if !edited[hl.Stream] {
+				m.spans.Add(hl, now)
+			}
 		}
+		m.refreshSpans()
 		cmds = append(cmds, m.waitForHighlights())
 		if !m.tickOn && !m.spans.Empty() {
 			m.tickOn = true
@@ -539,27 +630,75 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.console.AddError(errCursorListener + msg.err.Error())
 	}
 
-	if m.focus == focusEditor && m.editorVisible() {
-		before := m.textarea.Value()
+	if editorTakesInput(msg) && m.focus == focusEditor && m.editorVisible() {
+		before := m.textarea.Revision()
 		var cmd tea.Cmd
 		m.textarea, cmd = m.textarea.Update(msg)
-		if m.textarea.Value() != before {
+		if m.textarea.Revision() != before {
 			m.refreshEdited()
+			if m.cursorOn {
+				m.refreshSpans()
+			}
 		}
 		cmds = append(cmds, cmd)
 	}
 
 	if m.focus == focusConsole {
-		var cmd tea.Cmd
-		m.console, cmd = m.console.Update(msg)
-		cmds = append(cmds, cmd)
-	}
-
-	if m.cursorOn {
-		m.refreshSpans()
+		switch msg.(type) {
+		case tea.KeyMsg, tea.MouseMsg:
+			var cmd tea.Cmd
+			m.console, cmd = m.console.Update(msg)
+			cmds = append(cmds, cmd)
+		}
 	}
 
 	return m, tea.Batch(cmds...)
+}
+
+// editorTakesInput reports whether the message carries editor input.
+// Messages the model already handled (GHCi output, span batches and ticks,
+// resizes) skip the textarea: piping them through costs a soft-wrap pass
+// per message without changing anything.
+func editorTakesInput(msg tea.Msg) bool {
+	switch msg.(type) {
+	case ghciOutputMsg, ghciDoneMsg, ghciRestartedMsg, sclangWarnMsg, sclangReadyMsg,
+		highlightsMsg, spanTickMsg, cursorDoneMsg, cursorErrMsg,
+		tea.WindowSizeMsg:
+		return false
+	}
+	return true
+}
+
+// documentText returns the editor contents, rebuilt only after the buffer
+// changed. The per-frame dirty check and segmentation both need the whole
+// text, and rebuilding it costs a copy of the document.
+func (m *Model) documentText() string {
+	if m.buffer == nil {
+		m.buffer = &buffer{}
+	}
+	if rev := m.textarea.Revision(); m.buffer.revision != rev || m.buffer.text == "" {
+		m.buffer.text = m.textarea.Value()
+		m.buffer.revision = rev
+	}
+	return m.buffer.text
+}
+
+// helpBar renders the help line, reusing the rendered bar while its text,
+// the layout mode, and the terminal width are unchanged.
+func (m *Model) helpBar() string {
+	text := m.helpMsg()
+	cache := m.helpCache
+	if cache == nil {
+		cache = &helpBarCache{}
+		m.helpCache = cache
+	}
+	if cache.text != text || cache.mode != m.layout.Mode() || cache.width != m.width {
+		cache.text = text
+		cache.mode = m.layout.Mode()
+		cache.width = m.width
+		cache.bar = m.layout.HelpBar(m.styles, text)
+	}
+	return cache.bar
 }
 
 func (m Model) View() string {
@@ -570,7 +709,7 @@ func (m Model) View() string {
 	if m.layout.Mode() == ui.ModeTooSmall {
 		main := m.layout.RenderTooSmall(m.styles)
 		main = m.overlays(main)
-		return main + "\n" + m.layout.HelpBar(m.styles, m.helpMsg())
+		return main + "\n" + m.helpBar()
 	}
 
 	editorView := m.textarea.View()
@@ -590,7 +729,7 @@ func (m Model) View() string {
 		}
 	}
 
-	help := m.layout.HelpBar(m.styles, m.helpMsg())
+	help := m.helpBar()
 
 	return m.overlays(main) + "\n" + help
 }
@@ -792,14 +931,37 @@ func (m *Model) spanHighlights() []textarea.Highlight {
 			EndLine: span.EndLine,
 			Start:   span.StartCol,
 			End:     span.EndCol,
-			Style:   lipgloss.NewStyle().Reverse(true).Foreground(m.theme.StreamColor(span.Stream)),
+			Style:   m.streamStyle(span.Stream),
 		})
 	}
 	return highlights
 }
 
+// streamStyle is the pre-built tracing-cursor style for a d-stream: spans
+// refresh on every clock tick, so the reverse-video color is resolved once
+// per stream color instead of once per span per frame.
+func (m Model) streamStyle(stream int) lipgloss.Style {
+	if stream < 1 || len(m.spanStyles) == 0 {
+		return spanStyle(m.theme.Accent)
+	}
+	return m.spanStyles[(stream-1)%len(m.spanStyles)]
+}
+
+// newSpanStyles builds one highlight style per stream color in the palette.
+func newSpanStyles(theme ui.Theme) []lipgloss.Style {
+	styles := make([]lipgloss.Style, 0, len(theme.StreamColors))
+	for _, color := range theme.StreamColors {
+		styles = append(styles, spanStyle(color))
+	}
+	return styles
+}
+
+func spanStyle(color lipgloss.Color) lipgloss.Style {
+	return lipgloss.NewStyle().Reverse(true).Foreground(color)
+}
+
 func (m Model) handleEvaluate(mode evalMode) (tea.Model, tea.Cmd) {
-	lines := strings.Split(m.textarea.Value(), "\n")
+	lines := strings.Split(m.documentText(), "\n")
 	lineNum := m.textarea.Line()
 
 	var code string
@@ -882,10 +1044,9 @@ func containsSegment(segs []string, normalizedCode string) bool {
 // comparison. The segmentation is cached and recomputed only when the
 // buffer changed, so cursor highlight ticks do not reparse the buffer.
 func (m *Model) streamSegs() map[int][]string {
-	value := m.textarea.Value()
-	if m.segs == nil || value != m.segsFor {
-		m.segs = tidal.Segmented(value)
-		m.segsFor = value
+	if m.segsRev != m.textarea.Revision() {
+		m.segs = tidal.Segmented(m.documentText())
+		m.segsRev = m.textarea.Revision()
 	}
 	return m.segs
 }

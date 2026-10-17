@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/pshickeydev/triton/internal/cursor"
 	"github.com/pshickeydev/triton/internal/doc"
@@ -493,9 +494,9 @@ func TestHighlightMsgSuppressesEditedStream(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 130, Height: 40})
 	m = updated.(Model)
 
-	updated, _ = m.Update(highlightMsg{span: cursor.Highlight{
+	updated, _ = m.Update(highlightsMsg{spans: []cursor.Highlight{{
 		Stream: 1, Line: 1, EndLine: 1, StartCol: 13, EndCol: 15,
-	}})
+	}}})
 	um := updated.(Model)
 
 	if !um.spans.Empty() {
@@ -505,9 +506,9 @@ func TestHighlightMsgSuppressesEditedStream(t *testing.T) {
 
 func TestHighlightMsgWithoutCursorIgnored(t *testing.T) {
 	m := newTestModel()
-	updated, _ := m.Update(highlightMsg{span: cursor.Highlight{
+	updated, _ := m.Update(highlightsMsg{spans: []cursor.Highlight{{
 		Stream: 1, Line: 1, EndLine: 1, StartCol: 1, EndCol: 3,
-	}})
+	}}})
 	um := updated.(Model)
 	if !um.spans.Empty() {
 		t.Errorf("highlights should be ignored with the cursor disabled")
@@ -543,9 +544,9 @@ func TestHighlightMsgDroppedWhenPatternAbsent(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 130, Height: 40})
 	m = updated.(Model)
 
-	updated, _ = m.Update(highlightMsg{span: cursor.Highlight{
+	updated, _ = m.Update(highlightsMsg{spans: []cursor.Highlight{{
 		Stream: 1, Line: 1, EndLine: 1, StartCol: 13, EndCol: 15,
-	}})
+	}}})
 	um := updated.(Model)
 
 	if !um.spans.Empty() {
@@ -565,9 +566,9 @@ func TestHighlightMsgKeptWhilePatternInEditor(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 130, Height: 40})
 	m = updated.(Model)
 
-	updated, _ = m.Update(highlightMsg{span: cursor.Highlight{
+	updated, _ = m.Update(highlightsMsg{spans: []cursor.Highlight{{
 		Stream: 1, Line: 1, EndLine: 1, StartCol: 13, EndCol: 15,
-	}})
+	}}})
 	um := updated.(Model)
 
 	if um.spans.Empty() {
@@ -592,6 +593,28 @@ func TestSclangWarnMsgLoggedToConsole(t *testing.T) {
 	um.console.SetSize(60, 5)
 	if !strings.Contains(um.console.View(), "sc3-plugins not found") {
 		t.Errorf("warning missing from console view: %q", um.console.View())
+	}
+}
+
+func TestSclangReadyLoggedToConsole(t *testing.T) {
+	ready := make(chan bool, 1)
+	tracker := status.NewTracker(8)
+	panel := status.NewPanel(tracker, ui.DarkTheme().Palette)
+	console := status.NewLog(ui.DarkTheme().Palette)
+	m := NewModel(ui.DarkTheme(), nil, nil, tracker, panel, console, GhciConfig{}, WithSclangReady(ready))
+
+	updated, _ := m.Update(sclangReadyMsg{ok: true})
+	um := updated.(Model)
+
+	um.console.SetSize(60, 5)
+	if !strings.Contains(um.console.View(), "SuperDirt ready") {
+		t.Errorf("readiness missing from console view: %q", um.console.View())
+	}
+
+	updated, _ = m.Update(sclangReadyMsg{ok: false})
+	um = updated.(Model)
+	if !strings.Contains(um.console.View(), "did not signal ready") {
+		t.Errorf("timeout warning missing from console view: %q", um.console.View())
 	}
 }
 
@@ -1435,5 +1458,128 @@ func TestKeyRange(t *testing.T) {
 	}
 	if got := keyRange("F1", "F1"); got != "F1" {
 		t.Errorf("single key should not be a range, got %q", got)
+	}
+}
+
+// The cached document text must never go stale: it is keyed on the buffer
+// revision, and both the dirty marker and stream segmentation rely on it.
+func TestDocumentTextTracksBuffer(t *testing.T) {
+	m := newTestModel()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	keys := []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("d")},
+		{Type: tea.KeyRunes, Runes: []rune("1")},
+		{Type: tea.KeyEnter},
+		{Type: tea.KeyDown},
+		{Type: tea.KeyRunes, Runes: []rune("$ sound \"bd sn\"")},
+		{Type: tea.KeyBackspace},
+		{Type: tea.KeyLeft},
+		{Type: tea.KeyRunes, Runes: []rune("x")},
+		{Type: tea.KeyCtrlK},
+		{Type: tea.KeyCtrlW},
+	}
+	for _, msg := range keys {
+		updated, _ = m.Update(msg)
+		m = updated.(Model)
+		if got, want := m.documentText(), m.textarea.Value(); got != want {
+			t.Fatalf("after key %v: cached document is %q, want %q", msg, got, want)
+		}
+	}
+}
+
+func TestDirtyMarkerFollowsEdits(t *testing.T) {
+	tracker := status.NewTracker(8)
+	panel := status.NewPanel(tracker, ui.DarkTheme().Palette)
+	console := status.NewLog(ui.DarkTheme().Palette)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dirty.tidal")
+	document := doc.New()
+	if err := document.Save(path, `d1 $ sound "bd"`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := document.Load(path); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewModel(ui.DarkTheme(), nil, nil, tracker, panel, console, GhciConfig{}, WithDocument(document))
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(Model)
+	if m.dirty() {
+		t.Fatal("a freshly loaded document should not be dirty")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")})
+	m = updated.(Model)
+	if !m.dirty() {
+		t.Fatal("typing should mark the document dirty")
+	}
+	if !strings.Contains(m.helpBar(), dirtyMark) {
+		t.Errorf("help bar should mark the document dirty, got %q", m.helpBar())
+	}
+}
+
+// A burst of highlights on the listener channel must arrive as one update:
+// Tidal re-sends every sounding fragment on every clock tick.
+func TestHighlightsArriveBatched(t *testing.T) {
+	hl := make(chan cursor.Highlight, 8)
+	for i := 0; i < 5; i++ {
+		hl <- cursor.Highlight{Stream: 1, Line: 1, EndLine: 1, StartCol: 1 + i, EndCol: 3 + i}
+	}
+	m := NewModel(ui.DarkTheme(), nil, nil, status.NewTracker(8),
+		status.NewPanel(status.NewTracker(8), ui.DarkTheme().Palette),
+		status.NewLog(ui.DarkTheme().Palette), GhciConfig{},
+		WithCursor(hl, make(chan error, 1)))
+
+	msg := m.waitForHighlights()()
+	batch, ok := msg.(highlightsMsg)
+	if !ok {
+		t.Fatalf("expected a highlights batch, got %T", msg)
+	}
+	if len(batch.spans) != 5 {
+		t.Errorf("expected the whole burst in one batch, got %d spans", len(batch.spans))
+	}
+}
+
+// A closed highlights channel must surface as the cursor-done message.
+func TestHighlightsChannelClosed(t *testing.T) {
+	hl := make(chan cursor.Highlight)
+	close(hl)
+	tracker := status.NewTracker(8)
+	m := NewModel(ui.DarkTheme(), nil, nil, tracker, status.NewPanel(tracker, ui.DarkTheme().Palette),
+		status.NewLog(ui.DarkTheme().Palette), GhciConfig{}, WithCursor(hl, nil))
+
+	if msg := m.waitForHighlights()(); msg != (cursorDoneMsg{}) {
+		t.Errorf("expected cursorDoneMsg, got %T", msg)
+	}
+}
+
+// A nil readiness channel means no audio engine is being booted, so nothing
+// should be scheduled or logged.
+func TestSclangReadyIgnoresNilChannel(t *testing.T) {
+	tracker := status.NewTracker(8)
+	m := NewModel(ui.DarkTheme(), nil, nil, tracker, status.NewPanel(tracker, ui.DarkTheme().Palette),
+		status.NewLog(ui.DarkTheme().Palette), GhciConfig{}, WithSclangReady(nil))
+
+	if m.scReadyCh != nil {
+		t.Error("nil readiness channel should not be recorded")
+	}
+	if strings.Contains(m.console.View(), "SuperDirt") {
+		t.Errorf("nothing should be logged without an engine to boot: %q", m.console.View())
+	}
+	if msg := m.Init(); msg == nil {
+		t.Error("plain model should still schedule its startup commands")
+	}
+}
+
+// The pre-built tracing styles must select the same palette color the theme
+// would, including for stream numbers beyond the palette length.
+func TestStreamStyleMatchesTheme(t *testing.T) {
+	m := newTestModel()
+	for _, stream := range []int{1, 2, 9, 16, 17, 40, 0, -3} {
+		want := lipgloss.NewStyle().Reverse(true).Foreground(m.theme.StreamColor(stream))
+		if got := m.streamStyle(stream); got.String() != want.String() {
+			t.Errorf("stream %d style differs: got %q want %q", stream, got.String(), want.String())
+		}
 	}
 }

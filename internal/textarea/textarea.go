@@ -3,7 +3,6 @@
 package textarea
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"strconv"
 	"strings"
@@ -18,7 +17,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	rw "github.com/mattn/go-runewidth"
-	"github.com/pshickeydev/triton/internal/textarea/memoization"
 	"github.com/rivo/uniseg"
 )
 
@@ -171,25 +169,12 @@ func (s Style) computedText() lipgloss.Style {
 	return s.Text.Inherit(s.Base).Inline(true)
 }
 
-// line is the input to the text wrapping function. This is stored in a struct
-// so that it can be hashed and memoized.
-type line struct {
-	runes []rune
-	width int
-}
-
-// Hash returns a hash of the line.
-func (w line) Hash() string {
-	v := fmt.Sprintf("%s:%d", string(w.runes), w.width)
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(v)))
-}
-
 // Model is the Bubble Tea model for this text area element.
 type Model struct {
 	Err error
 
 	// General settings.
-	cache *memoization.MemoCache[line, [][]rune]
+	wraps *wrapCache
 
 	// Prompt is printed at the beginning of each line.
 	//
@@ -281,6 +266,10 @@ type Model struct {
 	// highlights are the buffer ranges rendered with a custom style,
 	// used for the pattern tracing cursor.
 	highlights []Highlight
+
+	// revision counts buffer edits, so callers can tell whether the text
+	// changed without rebuilding (and comparing) the whole document.
+	revision uint64
 }
 
 // New creates a new model with default settings.
@@ -299,7 +288,7 @@ func New() Model {
 		style:                &blurredStyle,
 		FocusedStyle:         focusedStyle,
 		BlurredStyle:         blurredStyle,
-		cache:                memoization.NewMemoCache[line, [][]rune](maxLines),
+		wraps:                newWrapCache(),
 		EndOfBufferCharacter: ' ',
 		ShowLineNumbers:      true,
 		Cursor:               cur,
@@ -368,6 +357,11 @@ func (m *Model) insertRunesFromUserInput(runes []rune) {
 	// clipboard. This avoids bugs due to e.g. tab characters and
 	// whatnot.
 	runes = m.san().Sanitize(runes)
+	if len(runes) == 0 {
+		// Nothing to insert: keys like Tab arrive here with no runes, and
+		// treating them as an edit would dirty the buffer.
+		return
+	}
 
 	if m.CharLimit > 0 {
 		availSpace := m.CharLimit - m.Length()
@@ -448,6 +442,7 @@ func (m *Model) insertRunesFromUserInput(runes []rune) {
 	// Finally add the tail at the end of the last line inserted.
 	m.value[m.row] = append(m.value[m.row], tail...)
 
+	m.markChanged()
 	m.SetCursor(m.col)
 }
 
@@ -602,6 +597,7 @@ func (m *Model) Reset() {
 	m.col = 0
 	m.row = 0
 	m.viewport.GotoTop()
+	m.markChanged()
 	m.SetCursor(0)
 }
 
@@ -619,6 +615,7 @@ func (m *Model) san() runeutil.Sanitizer {
 // not the cursor blink should be reset.
 func (m *Model) deleteBeforeCursor() {
 	m.value[m.row] = m.value[m.row][m.col:]
+	m.markChanged()
 	m.SetCursor(0)
 }
 
@@ -627,6 +624,7 @@ func (m *Model) deleteBeforeCursor() {
 // the cursor so as not to reveal word breaks in the masked input.
 func (m *Model) deleteAfterCursor() {
 	m.value[m.row] = m.value[m.row][:m.col]
+	m.markChanged()
 	m.SetCursor(len(m.value[m.row]))
 }
 
@@ -641,7 +639,10 @@ func (m *Model) transposeLeft() {
 	if m.col >= len(m.value[m.row]) {
 		m.SetCursor(m.col - 1)
 	}
-	m.value[m.row][m.col-1], m.value[m.row][m.col] = m.value[m.row][m.col], m.value[m.row][m.col-1]
+	if m.value[m.row][m.col-1] != m.value[m.row][m.col] {
+		m.value[m.row][m.col-1], m.value[m.row][m.col] = m.value[m.row][m.col], m.value[m.row][m.col-1]
+		m.markChanged()
+	}
 	if m.col < len(m.value[m.row]) {
 		m.SetCursor(m.col + 1)
 	}
@@ -685,6 +686,7 @@ func (m *Model) deleteWordLeft() {
 	} else {
 		m.value[m.row] = append(m.value[m.row][:m.col], m.value[m.row][oldCol:]...)
 	}
+	m.markChanged()
 }
 
 // deleteWordRight deletes the word right to the cursor.
@@ -714,6 +716,7 @@ func (m *Model) deleteWordRight() {
 		m.value[m.row] = append(m.value[m.row][:oldCol], m.value[m.row][m.col:]...)
 	}
 
+	m.markChanged()
 	m.SetCursor(oldCol)
 }
 
@@ -792,25 +795,30 @@ func (m *Model) doWordRight(fn func(charIdx int, pos int)) {
 	}
 }
 
+// changeRune replaces the rune at the cursor row's column i through fn, and
+// records an edit only when the rune actually differs.
+func (m *Model) changeRune(i int, fn func(rune) rune) {
+	if r := fn(m.value[m.row][i]); r != m.value[m.row][i] {
+		m.value[m.row][i] = r
+		m.markChanged()
+	}
+}
+
 // uppercaseRight changes the word to the right to uppercase.
 func (m *Model) uppercaseRight() {
-	m.doWordRight(func(_ int, i int) {
-		m.value[m.row][i] = unicode.ToUpper(m.value[m.row][i])
-	})
+	m.doWordRight(func(_ int, i int) { m.changeRune(i, unicode.ToUpper) })
 }
 
 // lowercaseRight changes the word to the right to lowercase.
 func (m *Model) lowercaseRight() {
-	m.doWordRight(func(_ int, i int) {
-		m.value[m.row][i] = unicode.ToLower(m.value[m.row][i])
-	})
+	m.doWordRight(func(_ int, i int) { m.changeRune(i, unicode.ToLower) })
 }
 
 // capitalizeRight changes the word to the right to title case.
 func (m *Model) capitalizeRight() {
 	m.doWordRight(func(charIdx int, i int) {
 		if charIdx == 0 {
-			m.value[m.row][i] = unicode.ToTitle(m.value[m.row][i])
+			m.changeRune(i, unicode.ToTitle)
 		}
 	})
 }
@@ -927,7 +935,12 @@ func (m *Model) SetWidth(w int) {
 	// the reserved width from them.
 
 	m.viewport.Width = inputWidth - reservedOuter
-	m.width = inputWidth - reservedOuter - reservedInner
+	contentWidth := inputWidth - reservedOuter - reservedInner
+	if m.width != contentWidth {
+		// Rows wrap at the new width, so no cached wrap applies any more.
+		m.wraps.clear()
+		m.width = contentWidth
+	}
 }
 
 // SetPromptFunc supersedes the Prompt field and sets a dynamic prompt
@@ -974,10 +987,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.value[m.row] = make([]rune, 0)
 	}
 
-	if m.MaxHeight > 0 && m.MaxHeight != m.cache.Capacity() {
-		m.cache = memoization.NewMemoCache[line, [][]rune](m.MaxHeight)
-	}
-
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch {
@@ -1003,6 +1012,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 			if len(m.value[m.row]) > 0 {
 				m.value[m.row] = append(m.value[m.row][:max(0, m.col-1)], m.value[m.row][m.col:]...)
+				m.markChanged()
 				if m.col > 0 {
 					m.SetCursor(m.col - 1)
 				}
@@ -1010,6 +1020,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case key.Matches(msg, m.KeyMap.DeleteCharacterForward):
 			if len(m.value[m.row]) > 0 && m.col < len(m.value[m.row]) {
 				m.value[m.row] = append(m.value[m.row][:m.col], m.value[m.row][m.col+1:]...)
+				m.markChanged()
 			}
 			if m.col >= len(m.value[m.row]) {
 				m.mergeLineBelow(m.row)
@@ -1093,9 +1104,35 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// View renders the text area in its current state.
+// blankRowRunes is how many rows one write of blankRows emits.
+const blankRowRunes = 64
+
+// blankRows is a reusable run of row terminators, so scrolling past a long
+// buffer costs no per-row styling and no allocations.
+var blankRows = strings.Repeat("\n", blankRowRunes)
+
+// writeBlankRows emits n rows that the viewport cannot show.
+func writeBlankRows(s *strings.Builder, n int) {
+	for ; n >= blankRowRunes; n -= blankRowRunes {
+		s.WriteString(blankRows)
+	}
+	s.WriteString(blankRows[:n])
+}
+
+// showPlaceholder reports whether the buffer holds nothing but the empty
+// first line, in which case the placeholder text is shown instead.
+func (m Model) showPlaceholder() bool {
+	if m.Placeholder == "" || m.row != 0 || m.col != 0 {
+		return false
+	}
+	return len(m.value) == 0 || (len(m.value) == 1 && len(m.value[0]) == 0)
+}
+
+// View renders the text area in its current state. Rows the viewport cannot
+// show are emitted blank, so the cost is the visible height rather than the
+// whole buffer.
 func (m Model) View() string {
-	if m.Value() == "" && m.row == 0 && m.col == 0 && m.Placeholder != "" {
+	if m.showPlaceholder() {
 		return m.placeholderView()
 	}
 	m.Cursor.TextStyle = m.style.computedCursorLine()
@@ -1103,16 +1140,25 @@ func (m Model) View() string {
 	var (
 		s                strings.Builder
 		style            lipgloss.Style
-		newLines         int
 		widestLineNumber int
 		lineInfo         = m.LineInfo()
 	)
+
+	top := m.viewport.YOffset
+	bottom := top + max(m.viewport.Height, 1)
 
 	displayLine := 0
 	hlRanges := m.highlightedRanges()
 	for l, line := range m.value {
 		wrappedLines := m.memoizedWrap(line, m.width)
 		lineOffset := 0
+		lineEnd := displayLine + len(wrappedLines)
+
+		if lineEnd <= top || displayLine >= bottom {
+			writeBlankRows(&s, len(wrappedLines))
+			displayLine = lineEnd
+			continue
+		}
 
 		if m.row == l {
 			style = m.style.computedCursorLine()
@@ -1121,10 +1167,19 @@ func (m Model) View() string {
 		}
 
 		for wl, wrappedLine := range wrappedLines {
-			prompt := m.getPromptString(displayLine)
+			row := displayLine
+			rowOffset := lineOffset
+			displayLine++
+			lineOffset += len(wrappedLine)
+			if row < top || row >= bottom {
+				// Row clipped by the viewport: keep its place unstyled.
+				s.WriteRune('\n')
+				continue
+			}
+
+			prompt := m.getPromptString(row)
 			prompt = m.style.computedPrompt().Render(prompt)
 			s.WriteString(style.Render(prompt))
-			displayLine++
 
 			var ln string
 			if m.ShowLineNumbers { //nolint:nestif
@@ -1168,14 +1223,12 @@ func (m Model) View() string {
 			}
 			ranges := hlRanges[l]
 			if m.row == l && lineInfo.RowOffset == wl {
-				m.renderCursorRow(&s, style, wrappedLine, lineOffset, ranges, lineInfo, line)
+				m.renderCursorRow(&s, style, wrappedLine, rowOffset, ranges, lineInfo, line)
 			} else {
-				renderSpans(&s, style, wrappedLine, lineOffset, ranges)
+				renderSpans(&s, style, wrappedLine, rowOffset, ranges)
 			}
-			lineOffset += len(wrappedLines[wl])
 			s.WriteString(style.Render(strings.Repeat(" ", max(0, padding))))
 			s.WriteRune('\n')
-			newLines++
 		}
 	}
 
@@ -1304,13 +1357,23 @@ func Blink() tea.Msg {
 }
 
 func (m Model) memoizedWrap(runes []rune, width int) [][]rune {
-	input := line{runes: runes, width: width}
-	if v, ok := m.cache.Get(input); ok {
-		return v
+	if rows, ok := m.wraps.get(runes, width); ok {
+		return rows
 	}
-	v := wrap(runes, width)
-	m.cache.Set(input, v)
-	return v
+	rows := wrap(runes, width)
+	m.wraps.put(runes, width, rows)
+	return rows
+}
+
+// Revision counts the edits made to the buffer. It changes only when the text
+// changes, so callers can detect an edit without comparing the document.
+func (m Model) Revision() uint64 {
+	return m.revision
+}
+
+// markChanged records that the buffer contents changed.
+func (m *Model) markChanged() {
+	m.revision++
 }
 
 // cursorLineNumber returns the line number that the cursor is on.
@@ -1334,6 +1397,7 @@ func (m *Model) mergeLineBelow(row int) {
 
 	// To perform a merge, we will need to combine the two lines and then
 	m.value[row] = append(m.value[row], m.value[row+1]...)
+	m.markChanged()
 
 	// Shift all lines up by one
 	for i := row + 1; i < len(m.value)-1; i++ {
@@ -1357,6 +1421,7 @@ func (m *Model) mergeLineAbove(row int) {
 
 	// To perform a merge, we will need to combine the two lines and then
 	m.value[row-1] = append(m.value[row-1], m.value[row]...)
+	m.markChanged()
 
 	// Shift all lines up by one
 	for i := row; i < len(m.value)-1; i++ {
@@ -1382,6 +1447,7 @@ func (m *Model) splitLine(row, col int) {
 	m.value[row] = head
 	m.value[row+1] = tail
 
+	m.markChanged()
 	m.col = 0
 	m.row++
 }

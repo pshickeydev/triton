@@ -26,7 +26,12 @@ import (
 const (
 	highlightsAddr = "/editor/highlights"
 	numMsgArgs     = 7
+	numPosArgs     = 4
 	chanBuffer     = 256
+
+	// maxDatagramBytes is the largest UDP datagram. The buffer is reused for
+	// every packet, so this is one allocation per listener, not per message.
+	maxDatagramBytes = 65535
 )
 
 // Highlight is one decoded source-position message from Tidal.
@@ -42,30 +47,19 @@ type Highlight struct {
 // Listener receives Tidal's OSCContext highlight messages and forwards the
 // decoded highlights on a channel.
 type Listener struct {
-	out    chan Highlight
-	server *osc.Server
-	addr   string
-	mu     sync.Mutex
-	conn   net.PacketConn
+	out  chan Highlight
+	addr string
+	mu   sync.Mutex
+	conn net.PacketConn
 }
 
 // NewListener creates a listener for Tidal's highlight messages on the given
 // address. Call Listen to start receiving.
 func NewListener(host string, port int) *Listener {
-	l := &Listener{
+	return &Listener{
 		out:  make(chan Highlight, chanBuffer),
 		addr: net.JoinHostPort(host, strconv.Itoa(port)),
 	}
-
-	dispatcher := osc.NewStandardDispatcher()
-	err := dispatcher.AddMsgHandler(highlightsAddr, l.handle)
-	if err != nil {
-		// Unreachable: highlightsAddr contains no pattern characters.
-		panic(err)
-	}
-
-	l.server = &osc.Server{Dispatcher: dispatcher}
-	return l
 }
 
 // Highlights returns the channel of decoded highlights. Slow consumers drop
@@ -74,10 +68,11 @@ func (l *Listener) Highlights() <-chan Highlight {
 	return l.out
 }
 
-// Listen starts receiving highlight messages. It blocks until the server
-// fails or Close is called, so callers should run it in a goroutine. The
-// socket is owned here (not via the go-osc server) so Close cannot race
-// with the bind.
+// Listen starts receiving highlight messages. It blocks until the socket
+// is closed or fails, so callers should run it in a goroutine. The socket
+// is owned here (not via the go-osc server) so Close cannot race with the
+// bind, and reading uses one reused buffer: a single 64 KiB allocation
+// instead of one per datagram plus a goroutine per packet.
 func (l *Listener) Listen() error {
 	conn, err := net.ListenPacket("udp", l.addr)
 	if err != nil {
@@ -87,11 +82,48 @@ func (l *Listener) Listen() error {
 	l.conn = conn
 	l.mu.Unlock()
 
-	err = l.server.Serve(conn)
-	if err != nil && strings.Contains(err.Error(), "use of closed network connection") {
-		return nil
+	buf := make([]byte, maxDatagramBytes)
+	for {
+		n, _, err := conn.ReadFrom(buf)
+		if err != nil {
+			// A closed socket is how Close stops the loop.
+			if strings.Contains(err.Error(), "use of closed network connection") {
+				return nil
+			}
+			return err
+		}
+		l.handlePacket(buf[:n])
 	}
-	return err
+}
+
+// handlePacket decodes one datagram and forwards the highlight messages it
+// contains; malformed datagrams are dropped.
+func (l *Listener) handlePacket(data []byte) {
+	packet, err := osc.ParsePacket(string(data))
+	if err != nil {
+		return
+	}
+	switch pkt := packet.(type) {
+	case *osc.Message:
+		if pkt.Address == highlightsAddr {
+			l.handle(pkt)
+		}
+	case *osc.Bundle:
+		l.handleBundle(pkt)
+	}
+}
+
+// handleBundle forwards the highlight messages in a bundle, recursing into
+// nested bundles.
+func (l *Listener) handleBundle(bundle *osc.Bundle) {
+	for _, msg := range bundle.Messages {
+		if msg.Address == highlightsAddr {
+			l.handle(msg)
+		}
+	}
+	for _, sub := range bundle.Bundles {
+		l.handleBundle(sub)
+	}
 }
 
 // Close stops Listen by closing its socket.
@@ -126,7 +158,7 @@ func (l *Listener) handle(msg *osc.Message) {
 		return
 	}
 
-	cols := make([]int, 4)
+	var cols [numPosArgs]int
 	for i, arg := range args[3:] {
 		n, ok := asInt(arg)
 		if !ok || n < 0 {

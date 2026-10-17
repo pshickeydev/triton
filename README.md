@@ -101,10 +101,8 @@ go run . examples/basic.tidal
 
 This will:
 
-1. Start SuperCollider/SuperDirt (`sclang start-superdirt.scd`)
-2. Wait for SuperDirt to signal ready
-3. Start GHCi and load the boot script (the bundled cursor-enabled BootTidal-triton.hs by default)
-4. Launch the TUI
+1. Start SuperCollider/SuperDirt (`sclang start-superdirt.scd`) and GHCi (with the bundled cursor-enabled BootTidal-triton.hs by default) concurrently
+2. Launch the TUI immediately; SuperDirt's readiness is reported in the console pane once the audio engine is up
 
 ## Keybindings
 

@@ -20,9 +20,38 @@ const (
 	editedMarker = "*"
 )
 
+// panelStyles holds the pre-built row styles so View does not construct
+// them (and parse the same colors) again on every frame.
+type panelStyles struct {
+	title   lipgloss.Style
+	label   lipgloss.Style
+	active  lipgloss.Style
+	muted   lipgloss.Style
+	soloed  lipgloss.Style
+	idle    lipgloss.Style
+	edited  lipgloss.Style
+	ghciOK  lipgloss.Style
+	ghciErr lipgloss.Style
+}
+
+func newPanelStyles(p ui.Palette) panelStyles {
+	return panelStyles{
+		title:   lipgloss.NewStyle().Bold(true).Foreground(p.Label),
+		label:   lipgloss.NewStyle().Foreground(p.Label),
+		active:  lipgloss.NewStyle().Foreground(p.Active),
+		muted:   lipgloss.NewStyle().Foreground(p.Muted),
+		soloed:  lipgloss.NewStyle().Foreground(p.Soloed).Bold(true),
+		idle:    lipgloss.NewStyle().Foreground(p.Idle),
+		edited:  lipgloss.NewStyle().Foreground(p.Edited),
+		ghciOK:  lipgloss.NewStyle().Foreground(p.GhciOK),
+		ghciErr: lipgloss.NewStyle().Foreground(p.GhciErr),
+	}
+}
+
 type Panel struct {
 	tracker *Tracker
 	palette ui.Palette
+	styles  panelStyles
 	width   int
 	height  int
 }
@@ -31,6 +60,7 @@ func NewPanel(tracker *Tracker, palette ui.Palette) *Panel {
 	return &Panel{
 		tracker: tracker,
 		palette: palette,
+		styles:  newPanelStyles(palette),
 	}
 }
 
@@ -41,47 +71,38 @@ func (p *Panel) SetSize(w, h int) {
 
 func (p Panel) View() string {
 	var b strings.Builder
+	styles := p.styles
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(p.palette.Label)
-	labelStyle := lipgloss.NewStyle().Foreground(p.palette.Label)
-	activeStyle := lipgloss.NewStyle().Foreground(p.palette.Active)
-	mutedStyle := lipgloss.NewStyle().Foreground(p.palette.Muted)
-	soloedStyle := lipgloss.NewStyle().Foreground(p.palette.Soloed).Bold(true)
-	idleStyle := lipgloss.NewStyle().Foreground(p.palette.Idle)
-	editedStyle := lipgloss.NewStyle().Foreground(p.palette.Edited)
-	ghciOKStyle := lipgloss.NewStyle().Foreground(p.palette.GhciOK)
-	ghciErrStyle := lipgloss.NewStyle().Foreground(p.palette.GhciErr)
-
-	b.WriteString(titleStyle.Render(panelTitle))
+	b.WriteString(styles.title.Render(panelTitle))
 	b.WriteString("\n\n")
 
 	streams := p.tracker.Streams()
 	edited := p.tracker.Edited()
-	b.WriteString(labelStyle.Render(labelStreams))
+	b.WriteString(styles.label.Render(labelStreams))
 	for i := 1; i <= len(streams); i++ {
 		state := streams[i]
 		label := fmt.Sprintf("d%d", i)
 		var s lipgloss.Style
 		switch state {
 		case StreamActive:
-			s = activeStyle
+			s = styles.active
 		case StreamMuted:
-			s = mutedStyle
+			s = styles.muted
 		case StreamSoloed:
-			s = soloedStyle
+			s = styles.soloed
 		default:
-			s = idleStyle
+			s = styles.idle
 		}
 		b.WriteString(s.Render(label))
 		if edited[i] {
-			b.WriteString(editedStyle.Render(editedMarker))
+			b.WriteString(styles.edited.Render(editedMarker))
 		}
 		b.WriteString(" ")
 	}
 	b.WriteString("\n")
 
 	cps := p.tracker.CPS()
-	b.WriteString(labelStyle.Render(labelCPS))
+	b.WriteString(styles.label.Render(labelCPS))
 	if cps > 0 {
 		b.WriteString(fmt.Sprintf(cpsFormat, cps))
 	} else {
@@ -89,11 +110,11 @@ func (p Panel) View() string {
 	}
 	b.WriteString("\n")
 
-	b.WriteString(labelStyle.Render(labelGhci))
+	b.WriteString(styles.label.Render(labelGhci))
 	if p.tracker.GhciOK() {
-		b.WriteString(ghciOKStyle.Render(ghciRunning))
+		b.WriteString(styles.ghciOK.Render(ghciRunning))
 	} else {
-		b.WriteString(ghciErrStyle.Render(ghciStopped))
+		b.WriteString(styles.ghciErr.Render(ghciStopped))
 	}
 	b.WriteString("\n")
 
