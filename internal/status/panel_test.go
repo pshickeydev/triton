@@ -43,3 +43,28 @@ func TestPanel_MutedAndEditedCoexist(t *testing.T) {
 		t.Errorf("muted stream with edits should still show edited marker, got %q", view)
 	}
 }
+
+// A soloed stream shows as soloed even when it is also muted: solo
+// takes precedence in Tidal.
+func TestPanel_MutedSoloedShowsSolo(t *testing.T) {
+	tr := NewTracker(2)
+	tr.SetMuted(1)
+	tr.SetSoloed(1)
+
+	view := NewPanel(tr, ui.DarkTheme().Palette).View()
+	if !strings.Contains(view, "d1 ") {
+		t.Errorf("muted+soloed stream should render without edited marker, got %q", view)
+	}
+}
+
+// The panel lists only the configured number of streams, even when
+// hidden streams carry tracked state.
+func TestPanel_ShowsOnlyVisibleStreams(t *testing.T) {
+	tr := NewTracker(2)
+	tr.SetPlaying(5, `d5 $ sound "bd"`)
+
+	view := NewPanel(tr, ui.DarkTheme().Palette).View()
+	if strings.Contains(view, "d5") {
+		t.Errorf("hidden stream should not render in the panel, got %q", view)
+	}
+}

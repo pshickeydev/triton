@@ -61,6 +61,8 @@ triton-install-superdirt
 
 (From a checkout, `sclang install-superdirt.scd` does the same.)
 
+`nix flake check` builds the triton package and smoke-tests the Tidal boot path (the bundled boot script must import `Sound.Tidal.Boot` under the flake's GHC) against the Tidal version locked by the nixpkgs input — currently **Tidal 1.10.1** on GHC 9.10.3.
+
 Note: nixpkgs has no SuperCollider for Apple Silicon macOS. There, the flake provides triton with GHC+Tidal only; install [SuperCollider](https://supercollider.github.io/) (with sc3-plugins) separately and make sure `sclang` is on your `PATH`.
 
 ## Manual Setup
@@ -118,24 +120,24 @@ This will:
 | `Alt-[` / `Alt-]` | Decrease / increase tempo (cps) |
 | `Ctrl-R` | Restart GHCi process |
 | `Tab` / `Shift-Tab` | Large (>= 110x34): cycle focus. Small (60x20–109x33): swap editor / status+console. Below 60x20: too-small notice |
-| `Ctrl-S` | Save buffer to the current file (unsaved: prompts for a name; existing: asks to overwrite) |
+| `Ctrl-S` | Save buffer to the bound file (unbound: prompts for a save-as name; saving over an existing file from the prompt asks to overwrite) |
 | `Ctrl-O` | Open a `.tidal` file (type a path, `Enter` to load, `Esc` to cancel; unsaved changes ask first) |
 | `Ctrl-C` | Quit (press twice to confirm, `Esc` to cancel) |
 
 ## Pattern Status
 
-The status panel shows each d-stream's state: playing (highlighted), muted, soloed, or idle.
+The status panel shows each d-stream's state: playing (highlighted), muted, soloed, or idle. Mute and solo are independent, as in Tidal: while any stream is soloed, a soloed stream stays displayed as soloed even if it is also muted, and non-solo streams do not sound.
 
 Streams with unevaluated edits are marked with a `*` suffix. The comparison is per-pattern (`d1 $ ...`), not per evaluation block. `Ctrl-J` evaluates the block under the cursor; `Ctrl-L` evaluates only the current line. The `*` clears once the playing code still appears in the editor. Evaluating only part of a multi-line pattern keeps the marker.
 
-Hush (`Ctrl-\`) and GHCi restart (`Ctrl-R`) stop all patterns. Any code left in the editor then shows as edited until evaluated again.
+Hush (`Ctrl-\`) and GHCi restart (`Ctrl-R`) stop all patterns. Hush keeps mute/solo flags; a restart resets them with the session. Any code left in the editor then shows as edited until evaluated again.
 
 ## Saving and Loading
 
 The editor buffer is a plain `.tidal` file (Tidal/Haskell source).
 
 - `triton path/to/set.tidal` opens a file at startup.
-- `Ctrl-S` saves to the current file; a buffer that was never saved opens a prompt prefilled with `untitled.tidal`. Saving over an existing file asks for confirmation first (`Enter` overwrites, `Esc` goes back to the prompt).
+- `Ctrl-S` saves to the bound file without asking; a buffer that was never saved opens a prompt prefilled with `untitled.tidal`. Confirming a save-as over an existing file asks for confirmation first (`Enter` overwrites, `Esc` goes back to the prompt).
 - Saves are atomic: an interrupted or failed save leaves the previous file intact.
 - `Ctrl-O` opens a file: type a path (or a `~/...` path) and press `Enter`; `Esc` cancels. Opening with unsaved changes asks first (`Enter` discards them and opens, `Esc` goes back to the prompt).
 - The help bar shows the current file; `*` after the name marks unsaved changes.
@@ -165,8 +167,8 @@ auto_start = true
 
 [ui]
 theme = "dark"
-default_tempo = 0.6
-visible_streams = 8   # 1-16
+default_tempo = 0.6 # applied after boot and restart
+visible_streams = 8 # panel rows; d1-d16 stay tracked
 
 [cursor]
 enabled = true
@@ -175,7 +177,7 @@ port = 6013
 boot_script = ""
 ```
 
-Environment variables override config values with the `TIDAL_CHARM_` prefix (e.g. `TIDAL_CHARM_SUPERDIRT_AUTO_START=false`).
+Environment variables override config values with the `TIDAL_CHARM_` prefix (e.g. `TIDAL_CHARM_SUPERDIRT_AUTO_START=false`). Malformed override values are rejected at startup with an error naming the variable and its value (e.g. `TIDAL_CHARM_CURSOR_PORT=not-a-port`); `ui.default_tempo` must be a finite positive number.
 
 ## Pattern Tracing Cursor
 
@@ -209,8 +211,6 @@ Without Nix: requires Go 1.24+, GHC, and a working Tidal Cycles / SuperDirt setu
 go build -o triton .
 ./triton examples/basic.tidal
 ```
-
-Local state (SQLite DB, logs) is kept in `.crush/`; it is excluded from version control and safe to delete.
 
 ## Project Structure
 

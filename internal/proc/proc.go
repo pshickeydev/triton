@@ -60,6 +60,7 @@ type Handle struct {
 	outputWg sync.WaitGroup
 	done     chan struct{}
 	mu       sync.Mutex
+	writeMu  sync.Mutex
 	running  bool
 	name     string
 	quitCmd  string
@@ -151,13 +152,19 @@ func (h *Handle) readPipe(r io.ReadCloser, kind pipeKind) {
 	h.outputWg.Done()
 }
 
-// Write sends text to the child's stdin verbatim.
+// Write sends text to the child's stdin verbatim. The write itself runs
+// outside the lifecycle lock: a child that stops reading stdin must not
+// keep Close or Kill from running. The write lock keeps concurrent
+// evaluations from interleaving in the pipe.
 func (h *Handle) Write(text string) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if !h.running {
+	running := h.running
+	h.mu.Unlock()
+	if !running {
 		return fmt.Errorf("%s process is not running", h.name)
 	}
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
 	if _, err := io.WriteString(h.stdin, text); err != nil {
 		return fmt.Errorf("writing to %s stdin: %w", h.name, err)
 	}
@@ -192,28 +199,55 @@ func (h *Handle) Pid() int {
 }
 
 // Close asks the child to quit and waits up to the configured timeout
-// before killing it.
+// before killing it. The quit command is delivered in the background: a
+// child that stopped reading stdin would otherwise block Close for the
+// unbounded duration of that write. The process group teardown runs on
+// every path, so descendants are cleaned up even when the child already
+// exited on its own.
 func (h *Handle) Close() error {
 	h.mu.Lock()
-	if !h.running {
-		h.mu.Unlock()
-		return nil
-	}
-	if _, err := io.WriteString(h.stdin, h.quitCmd); err != nil {
-		// The quit command never arrived; report it and let the shutdown
-		// timeout fall back to killing the process.
-		chbuf.Send(h.outputCh, Line{Text: "sending quit command: " + err.Error(), IsError: true})
-	}
-	h.stdin.Close()
+	running := h.running
 	h.mu.Unlock()
+	if !running {
+		return h.killGroup()
+	}
+
+	go h.sendQuit()
 
 	select {
 	case <-h.done:
-		return nil
+		return h.killGroup()
 	case <-time.After(h.timeout):
 		if h.killCmd != nil {
 			return h.killCmd(h.cmd)
 		}
 		return h.cmd.Process.Kill()
 	}
+}
+
+// killGroup tears down the process group of a child that already
+// exited: its descendants may still be running. Children without a
+// group kill have nothing left to clean up.
+func (h *Handle) killGroup() error {
+	if h.killCmd == nil {
+		return nil
+	}
+	return h.killCmd(h.cmd)
+}
+
+// sendQuit writes the quit command and closes stdin. When the write
+// fails the line is reported on the output channel and the shutdown
+// timeout falls back to killing the process.
+func (h *Handle) sendQuit() {
+	h.writeMu.Lock()
+	_, err := io.WriteString(h.stdin, h.quitCmd)
+	h.writeMu.Unlock()
+	if err != nil {
+		h.mu.Lock()
+		if h.running {
+			chbuf.Send(h.outputCh, Line{Text: "sending quit command: " + err.Error(), IsError: true})
+		}
+		h.mu.Unlock()
+	}
+	h.stdin.Close()
 }

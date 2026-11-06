@@ -22,8 +22,10 @@ const (
 	smallMinWidth  = 60
 	smallMinHeight = 18
 
+	// Pane-area minimum for the large layout. The help bar takes 2 more
+	// rows, so the user-facing minimum terminal size is 110x34.
 	largeMinWidth  = 110
-	largeMinHeight = 34
+	largeMinHeight = 32
 
 	editorRatioNum = 2
 	editorRatioDen = 3

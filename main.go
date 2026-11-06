@@ -40,50 +40,96 @@ func parseArgs(args []string) (string, error) {
 	return args[1], nil
 }
 
+// bootScripts carries the resolved boot script paths and their cleanups.
+type bootScripts struct {
+	ghci     string
+	cleanups []func()
+}
+
+// cleanup runs every registered script cleanup, removing temp files.
+func (b *bootScripts) cleanup() {
+	for _, cleanup := range b.cleanups {
+		cleanup()
+	}
+}
+
+// resolveBootScripts resolves the SuperDirt and cursor boot scripts,
+// embedding the bundled fallbacks when the configured paths are the
+// default names and no local copy exists. It must run before the
+// dependency check: otherwise triton exits with a missing boot script
+// whenever it runs outside its checkout.
+func resolveBootScripts(cfg *config.Config) (*bootScripts, error) {
+	b := &bootScripts{ghci: cfg.GHCi.BootScript}
+	if cfg.SuperDirt.AutoStart {
+		script, cleanup, err := boot.SuperDirt(cfg.SuperDirt.BootScript, superdirtBootScript)
+		if err != nil {
+			return nil, fmt.Errorf("preparing SuperDirt boot script: %w", err)
+		}
+		b.cleanups = append(b.cleanups, cleanup)
+		cfg.SuperDirt.BootScript = script
+	}
+	if cfg.Cursor.Enabled {
+		path, cleanup, err := boot.Cursor(cfg.Cursor.BootScript, cursorBootScript, cfg.Cursor.Host, cfg.Cursor.Port)
+		if err != nil {
+			return nil, fmt.Errorf("preparing cursor boot script: %w", err)
+		}
+		b.cleanups = append(b.cleanups, cleanup)
+		b.ghci = path
+	}
+	return b, nil
+}
+
+// missingDepsReport formats the dependency check failure, one
+// indented entry per missing dependency.
+func missingDepsReport(missing []config.Dependency) string {
+	entries := make([]string, 0, len(missing))
+	for _, dep := range missing {
+		entries = append(entries, fmt.Sprintf("  %s: %s not found (%s)", dep.Name, dep.Path, dep.Hint))
+	}
+	return strings.Join(entries, "\n")
+}
+
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	openPath, err := parseArgs(os.Args)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "usage: triton [file.tidal]\n%v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("usage: triton [file.tidal]\n%v", err)
 	}
 
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("config error: %w", err)
 	}
 
 	document := doc.New()
 	if openPath != "" {
 		if _, err := document.Load(openPath); err != nil {
-			fmt.Fprintf(os.Stderr, "open error: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("open error: %w", err)
 		}
 	}
 
+	scripts, err := resolveBootScripts(cfg)
+	if err != nil {
+		return err
+	}
+	defer scripts.cleanup()
+
 	if missing := cfg.MissingDeps(); len(missing) > 0 {
-		fmt.Fprintf(os.Stderr, "missing dependencies:\n")
-		for _, dep := range missing {
-			fmt.Fprintf(os.Stderr, "  %s: %s not found (%s)\n", dep.Name, dep.Path, dep.Hint)
-		}
-		os.Exit(1)
+		return fmt.Errorf("missing dependencies:\n%s", missingDepsReport(missing))
 	}
 
 	var scProc *superdirt.Process
 	var scReady chan bool
 	if cfg.SuperDirt.AutoStart {
-		script, cleanupScript, err := boot.SuperDirt(cfg.SuperDirt.BootScript, superdirtBootScript)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "preparing SuperDirt boot script: %v\n", err)
-			os.Exit(1)
-		}
-		defer cleanupScript()
-		cfg.SuperDirt.BootScript = script
-
 		scProc, err = superdirt.New(cfg.SuperDirt.Executable, cfg.SuperDirt.BootScript)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to start sclang: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("failed to start sclang: %w", err)
 		}
 		defer func() {
 			fmt.Fprintf(os.Stderr, "closing sclang...\n")
@@ -97,27 +143,9 @@ func main() {
 		go func() { scReady <- scProc.WaitForReady() }()
 	}
 
-	bootScript := cfg.GHCi.BootScript
-	if cfg.Cursor.Enabled {
-		path, cleanupBoot, err := boot.Cursor(cfg.Cursor.BootScript, cursorBootScript, cfg.Cursor.Host, cfg.Cursor.Port)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "preparing cursor boot script: %v\n", err)
-			os.Exit(1)
-		}
-		defer cleanupBoot()
-		bootScript = path
-	}
-
-	ghciProc, err := ghci.New(cfg.GHCi.Executable, bootScript, cfg.GHCi.WorkingDir)
+	ghciProc, err := ghci.New(cfg.GHCi.Executable, scripts.ghci, cfg.GHCi.WorkingDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to start ghci: %v\n", err)
-		fmt.Fprintf(os.Stderr, "check that %s is installed and %s exists\n", cfg.GHCi.Executable, bootScript)
-		if scProc != nil {
-			if scErr := scProc.Close(); scErr != nil {
-				fmt.Fprintf(os.Stderr, "closing sclang: %v\n", scErr)
-			}
-		}
-		os.Exit(1)
+		return fmt.Errorf("failed to start ghci: %w\ncheck that %s is installed and %s exists", err, cfg.GHCi.Executable, scripts.ghci)
 	}
 	defer func() {
 		fmt.Fprintf(os.Stderr, "closing ghci...\n")
@@ -137,8 +165,9 @@ func main() {
 
 	ghciCfg := model.GhciConfig{
 		Executable: cfg.GHCi.Executable,
-		BootScript: bootScript,
+		BootScript: scripts.ghci,
 		WorkingDir: cfg.GHCi.WorkingDir,
+		Tempo:      cfg.UI.DefaultTempo,
 	}
 
 	opts := []model.Option{model.WithSclang(cfg.SuperDirt.AutoStart), model.WithDocument(document)}
@@ -160,16 +189,14 @@ func main() {
 	m := model.NewModel(theme, ghciProc, oscClient, tracker, panel, console, ghciCfg, opts...)
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "tui error: %v\n", err)
-		if ghciErr := ghciProc.Close(); ghciErr != nil {
-			fmt.Fprintf(os.Stderr, "closing ghci: %v\n", ghciErr)
-		}
-		if scProc != nil {
-			if scErr := scProc.Close(); scErr != nil {
-				fmt.Fprintf(os.Stderr, "closing sclang: %v\n", scErr)
+	finalModel, err := p.Run()
+	if err != nil {
+		if final, ok := finalModel.(model.Model); ok {
+			if closeErr := final.Close(); closeErr != nil {
+				return fmt.Errorf("tui error: %w; closing current ghci: %v", err, closeErr)
 			}
 		}
-		os.Exit(1)
+		return fmt.Errorf("tui error: %w", err)
 	}
+	return nil
 }

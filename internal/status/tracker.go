@@ -14,40 +14,59 @@ const (
 	StreamSoloed
 )
 
+// maxStream is Tidal's highest pattern stream id (d16): streams up to it
+// are valid and stay tracked even when the panel shows fewer of them.
+const maxStream = 16
+
+// Tracker mirrors Tidal's transport state. Mute and solo are independent
+// per-stream flags, like Tidal's psMute and psSolo: while any stream is
+// soloed, solo takes precedence over mute, so a muted and soloed stream
+// derives as soloed (and is audible). Only the visible stream ids are
+// pre-registered; hidden valid streams join as soon as they carry state.
 type Tracker struct {
 	mu      sync.RWMutex
-	streams map[int]StreamState
+	visible int
 	playing map[int]string
 	edited  map[int]bool
+	muted   map[int]bool
+	soloed  map[int]bool
 	cps     float64
 	ghciOK  bool
 }
 
 func NewTracker(visibleStreams int) *Tracker {
-	t := &Tracker{
-		streams: make(map[int]StreamState),
+	return &Tracker{
+		visible: visibleStreams,
 		playing: make(map[int]string),
 		edited:  make(map[int]bool),
+		muted:   make(map[int]bool),
+		soloed:  make(map[int]bool),
 	}
-	for i := 1; i <= visibleStreams; i++ {
-		t.streams[i] = StreamIdle
-	}
-	return t
+}
+
+// Visible returns the number of streams the panel shows.
+func (t *Tracker) Visible() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.visible
+}
+
+// valid reports whether streamNum is one of Tidal's d1..d16.
+func valid(streamNum int) bool {
+	return streamNum >= 1 && streamNum <= maxStream
 }
 
 // SetPlaying records the code last evaluated for a stream so the panel
 // can distinguish playing patterns from editor edits that were not
 // evaluated yet. Muted and soloed streams keep their transport state.
+// A hidden but valid stream becomes tracked.
 func (t *Tracker) SetPlaying(streamNum int, code string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, ok := t.streams[streamNum]; !ok {
+	if !valid(streamNum) {
 		return
 	}
 	t.playing[streamNum] = code
-	if t.streams[streamNum] == StreamIdle {
-		t.streams[streamNum] = StreamActive
-	}
 }
 
 func (t *Tracker) Playing() map[int]string {
@@ -61,7 +80,7 @@ func (t *Tracker) Playing() map[int]string {
 func (t *Tracker) SetEdited(streamNum int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, ok := t.streams[streamNum]; ok {
+	if valid(streamNum) {
 		t.edited[streamNum] = true
 	}
 }
@@ -83,80 +102,119 @@ func (t *Tracker) Edited() map[int]bool {
 func (t *Tracker) SetMuted(streamNum int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, ok := t.streams[streamNum]; ok {
-		t.streams[streamNum] = StreamMuted
+	if valid(streamNum) {
+		t.muted[streamNum] = true
 	}
 }
 
 func (t *Tracker) SetSoloed(streamNum int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, ok := t.streams[streamNum]; ok {
-		t.streams[streamNum] = StreamSoloed
+	if valid(streamNum) {
+		t.soloed[streamNum] = true
 	}
 }
 
-func (t *Tracker) ToggleMute(streamNum int) StreamState {
+// ToggleMute flips a stream's mute flag, leaving its solo flag alone,
+// and returns the stream's new muted state.
+func (t *Tracker) ToggleMute(streamNum int) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	current, ok := t.streams[streamNum]
-	if !ok {
-		return StreamIdle
+	if !valid(streamNum) || !t.tracked(streamNum) {
+		return false
 	}
-	if current == StreamMuted {
-		t.streams[streamNum] = t.unmutedState(streamNum)
-		return t.streams[streamNum]
-	}
-	t.streams[streamNum] = StreamMuted
-	return StreamMuted
+	t.muted[streamNum] = !t.muted[streamNum]
+	return t.muted[streamNum]
 }
 
-// UnmuteAll restores muted streams: those with playing code become
-// active again, the rest return to idle. Streams in other states are
-// left alone.
+// ToggleSolo flips a stream's solo flag, leaving its mute flag alone,
+// and returns the stream's new soloed state.
+func (t *Tracker) ToggleSolo(streamNum int) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !valid(streamNum) || !t.tracked(streamNum) {
+		return false
+	}
+	t.soloed[streamNum] = !t.soloed[streamNum]
+	return t.soloed[streamNum]
+}
+
+// MuteAll mutes every stream, the way Tidal's muteAll does; solo flags
+// are untouched.
+func (t *Tracker) MuteAll() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for n := 1; n <= maxStream; n++ {
+		t.muted[n] = true
+	}
+}
+
+// UnmuteAll restores muted streams to the state they would have without
+// the mute flag: those with playing code become active again, the rest
+// return to idle. Solo flags are untouched.
 func (t *Tracker) UnmuteAll() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for n, state := range t.streams {
-		if state != StreamMuted {
-			continue
-		}
-		t.streams[n] = t.unmutedState(n)
-	}
+	clear(t.muted)
 }
 
-// unmutedState is a stream's state after being unmuted: active when a
-// pattern is playing on it, idle otherwise. Callers hold the mutex.
-func (t *Tracker) unmutedState(streamNum int) StreamState {
-	if _, ok := t.playing[streamNum]; ok {
-		return StreamActive
-	}
-	return StreamIdle
-}
-
-func (t *Tracker) ToggleSolo(streamNum int) StreamState {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	current, ok := t.streams[streamNum]
-	if !ok {
-		return StreamIdle
-	}
-	if current == StreamSoloed {
-		t.streams[streamNum] = t.unmutedState(streamNum)
-		return t.streams[streamNum]
-	}
-	t.streams[streamNum] = StreamSoloed
-	return StreamSoloed
-}
-
+// HushAll clears the playing state, like Tidal's hush stopping every
+// pattern. Mute and solo flags survive, the way they do in Tidal.
 func (t *Tracker) HushAll() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for k := range t.streams {
-		t.streams[k] = StreamIdle
-	}
 	clear(t.playing)
 	clear(t.edited)
+}
+
+// Reset clears every tracked state, for a freshly booted (or dead) GHCi
+// whose transport state no longer exists.
+func (t *Tracker) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	clear(t.playing)
+	clear(t.edited)
+	clear(t.muted)
+	clear(t.soloed)
+}
+
+// Streams derives every tracked stream's display state with solo
+// precedence: soloed over muted over playing over idle. Hidden streams
+// are included while they carry state.
+func (t *Tracker) Streams() map[int]StreamState {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	states := make(map[int]StreamState, t.visible)
+	for n := 1; n <= maxStream; n++ {
+		if !t.tracked(n) {
+			continue
+		}
+		_, playing := t.playing[n]
+		switch {
+		case t.soloed[n]:
+			states[n] = StreamSoloed
+		case t.muted[n]:
+			states[n] = StreamMuted
+		case playing:
+			states[n] = StreamActive
+		default:
+			states[n] = StreamIdle
+		}
+	}
+	return states
+}
+
+// tracked reports whether stream n is visible or carries any state.
+// Callers hold the mutex.
+func (t *Tracker) tracked(n int) bool {
+	if n <= t.visible {
+		return true
+	}
+	_, inPlaying := t.playing[n]
+	_, inEdited := t.edited[n]
+	_, inMuted := t.muted[n]
+	_, inSoloed := t.soloed[n]
+	return inPlaying || inEdited || inMuted || inSoloed
 }
 
 func (t *Tracker) SetCPS(cps float64) {
@@ -181,12 +239,4 @@ func (t *Tracker) GhciOK() bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.ghciOK
-}
-
-func (t *Tracker) Streams() map[int]StreamState {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	cp := make(map[int]StreamState, len(t.streams))
-	maps.Copy(cp, t.streams)
-	return cp
 }

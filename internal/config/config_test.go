@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -229,6 +230,116 @@ func TestLoadAppliesVisibleStreamsEnv(t *testing.T) {
 	}
 	if cfg.UI.VisibleStreams != 12 {
 		t.Errorf("UI.VisibleStreams = %d, want 12", cfg.UI.VisibleStreams)
+	}
+}
+
+func TestLoadRejectsNonFiniteTempo(t *testing.T) {
+	for _, value := range []string{"NaN", "+Inf"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("TIDAL_CHARM_UI_DEFAULT_TEMPO", value)
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("Load accepted default_tempo=%v", value)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidNumericEnv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TIDAL_CHARM_CURSOR_PORT", "not-a-port")
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load silently used the default port for an invalid override")
+	}
+}
+
+func TestLoadRejectsMalformedNumericEnv(t *testing.T) {
+	for _, tt := range []struct{ name, key, value string }{
+		{"osc port", "TIDAL_CHARM_OSC_TIDAL_CONTROL_PORT", "not-a-port"},
+		{"cursor port", "TIDAL_CHARM_CURSOR_PORT", "7013.5"},
+		{"visible streams", "TIDAL_CHARM_UI_VISIBLE_STREAMS", "many"},
+		{"default tempo", "TIDAL_CHARM_UI_DEFAULT_TEMPO", "fast"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv(tt.key, tt.value)
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("Load accepted %s=%q", tt.key, tt.value)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tt.key) {
+				t.Errorf("error %q does not name the variable %q", msg, tt.key)
+			}
+			if !strings.Contains(msg, tt.value) {
+				t.Errorf("error %q does not name the value %q", msg, tt.value)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsMalformedBoolEnv(t *testing.T) {
+	for _, tt := range []struct{ name, key, value string }{
+		{"superdirt auto_start", "TIDAL_CHARM_SUPERDIRT_AUTO_START", "yes"},
+		{"cursor enabled", "TIDAL_CHARM_CURSOR_ENABLED", "maybe"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv(tt.key, tt.value)
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("Load accepted %s=%q", tt.key, tt.value)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tt.key) {
+				t.Errorf("error %q does not name the variable %q", msg, tt.key)
+			}
+			if !strings.Contains(msg, tt.value) {
+				t.Errorf("error %q does not name the value %q", msg, tt.value)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsNonFiniteTempoEnv(t *testing.T) {
+	for _, value := range []string{"NaN", "+Inf", "-Inf"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("TIDAL_CHARM_UI_DEFAULT_TEMPO", value)
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("Load accepted default_tempo=%v", value)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "TIDAL_CHARM_UI_DEFAULT_TEMPO") {
+				t.Errorf("error %q does not name the variable", msg)
+			}
+			if !strings.Contains(msg, value) {
+				t.Errorf("error %q does not name the value %q", msg, value)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsNonFiniteTempoConfig(t *testing.T) {
+	for _, value := range []string{"NaN", "Inf"} {
+		t.Run(value, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			dir := filepath.Join(home, ".config", "triton")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			content := "[ui]\ndefault_tempo = " + value + "\n"
+			if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load accepted default_tempo=%v from config file", value)
+			}
+		})
 	}
 }
 

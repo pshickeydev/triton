@@ -826,7 +826,7 @@ func (m *Model) capitalizeRight() {
 // LineInfo returns the number of characters from the start of the
 // (soft-wrapped) line and the (soft-wrapped) line width.
 func (m Model) LineInfo() LineInfo {
-	grid := m.memoizedWrap(m.value[m.row], m.width)
+	grid := m.memoizedWrap(m.row)
 
 	// Find out which line we are currently on. This can be determined by the
 	// m.col and counting the number of runes that we need to skip.
@@ -899,6 +899,8 @@ func (m *Model) moveToEnd() {
 // whether or not line numbers are being shown.
 //
 // Ensure that SetWidth is called after setting the Prompt and ShowLineNumbers,
+// and after loading a buffer taller than MaxHeight, since the line number
+// gutter is sized for the line count the model holds at that point.
 // It is important that the width of the textarea be exactly the given width
 // and no more.
 func (m *Model) SetWidth(w int) {
@@ -914,10 +916,10 @@ func (m *Model) SetWidth(w int) {
 	// Add prompt width to reserved inner width.
 	reservedInner := m.promptWidth
 
-	// Add line number width to reserved inner width.
+	// Add line number width to reserved inner width: digits for the tallest
+	// line count the model supports, plus one margin.
 	if m.ShowLineNumbers {
-		const lnWidth = 4 // Up to 3 digits for line number plus 1 margin.
-		reservedInner += lnWidth
+		reservedInner += m.lineNumberDigits() + lnMargin
 	}
 
 	// Input width must be at least one more than the reserved inner and outer
@@ -1150,7 +1152,7 @@ func (m Model) View() string {
 	displayLine := 0
 	hlRanges := m.highlightedRanges()
 	for l, line := range m.value {
-		wrappedLines := m.memoizedWrap(line, m.width)
+		wrappedLines := m.memoizedWrap(l)
 		lineOffset := 0
 		lineEnd := displayLine + len(wrappedLines)
 
@@ -1252,13 +1254,29 @@ func (m Model) View() string {
 	return m.style.Base.Render(m.viewport.View())
 }
 
-// formatLineNumber formats the line number for display dynamically based on
-// the maximum number of lines.
+// lnMargin is the single blank column rendered after a line number.
+const lnMargin = 1
+
+// lineNumberDigits returns how many digits line numbers need: the buffer can
+// hold one line per row of MaxHeight (or, with the limit disabled, up to
+// maxLines), and loading a document can exceed that, so the taller of the
+// height cap and the current line count is the supported count.
+func (m Model) lineNumberDigits() int {
+	limit := m.MaxHeight
+	if limit <= 0 {
+		limit = maxLines
+	}
+	if n := len(m.value); n > limit {
+		limit = n
+	}
+	return len(strconv.Itoa(limit))
+}
+
+// formatLineNumber formats a line number to the width the gutter reserves,
+// so the widest number the buffer can show fits without pushing the text out
+// of the frame.
 func (m Model) formatLineNumber(x any) string {
-	// XXX: ultimately we should use a max buffer height, which has yet to be
-	// implemented.
-	digits := len(strconv.Itoa(m.MaxHeight))
-	return fmt.Sprintf(" %*v ", digits, x)
+	return fmt.Sprintf("%*v ", m.lineNumberDigits(), x)
 }
 
 func (m Model) getPromptString(displayLine int) (prompt string) {
@@ -1356,12 +1374,12 @@ func Blink() tea.Msg {
 	return cursor.Blink()
 }
 
-func (m Model) memoizedWrap(runes []rune, width int) [][]rune {
-	if rows, ok := m.wraps.get(runes, width); ok {
+func (m Model) memoizedWrap(index int) [][]rune {
+	if rows, ok := m.wraps.get(index, m.revision, m.width); ok {
 		return rows
 	}
-	rows := wrap(runes, width)
-	m.wraps.put(runes, width, rows)
+	rows := wrap(m.value[index], m.width)
+	m.wraps.put(index, m.revision, m.width, rows)
 	return rows
 }
 
@@ -1383,7 +1401,7 @@ func (m Model) cursorLineNumber() int {
 	for i := 0; i < m.row; i++ {
 		// Calculate the number of lines that the current line will be split
 		// into.
-		line += len(m.memoizedWrap(m.value[i], m.width))
+		line += len(m.memoizedWrap(i))
 	}
 	line += m.LineInfo().RowOffset
 	return line

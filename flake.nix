@@ -72,10 +72,13 @@
             pname = "triton";
             version = "0.1.0";
             src = ./.;
-            vendorHash = "sha256-khfl2gO7OcaDyJpskIn0Og5VP5K6tC/DXz8uCD+pD68=";
+            vendorHash = "sha256-5KM/LJaYhu/7JAYLuGUgRYiL3evX0yryPSuXAh/Urro=";
             # Stripping symbols and DWARF shrinks the binary by about a third;
             # Go panics still name functions without them.
-            ldflags = [ "-s" "-w" ];
+            ldflags = [
+              "-s"
+              "-w"
+            ];
             nativeBuildInputs = [ pkgs.makeWrapper ];
             postInstall = ''
                 install -Dm644 start-superdirt.scd install-superdirt.scd -t $out/share/triton
@@ -95,17 +98,6 @@
               wrapProgram $out/bin/triton-install-superdirt \
                 --prefix PATH : ${pkgs.lib.makeBinPath sc}
             '';
-            passthru.tests.tidal-import = pkgs.runCommand "triton-tidal-import-test" { } ''
-              # ghci must boot Tidal even with a stale cabal .ghc.environment
-              # file in the working directory; GHC_ENVIRONMENT=- ignores it.
-              mkdir cwd && cd cwd
-              printf 'clear-package-db\nglobal-package-db\npackage-id base-4.20.2.0-inplace\n' \
-                > .ghc.environment.x86_64-linux-9.10.3
-              GHC_ENVIRONMENT=- ${ghc-with-tidal}/bin/ghci \
-                -e 'putStrLn "tidal-ok"' > out.log 2>&1
-              grep -q tidal-ok out.log || (cat out.log; exit 1)
-              touch $out
-            '';
             meta.mainProgram = "triton";
             meta.description = "Terminal UI for live-coding music with Tidal Cycles";
             meta.license = pkgs.lib.licenses.mit;
@@ -115,9 +107,49 @@
         // nixpkgs.lib.optionalAttrs (sc != [ ]) {
           supercollider-superdirt = builtins.head sc;
         };
+
+      # `nix flake check` builds the triton package and smoke-tests the
+      # Tidal boot path end to end: the bundled boot script must import
+      # Sound.Tidal.Boot and bind the tidal aliases under the GHC that
+      # ships with triton, even when a stale cabal package environment
+      # file sits in the working directory (GHC_ENVIRONMENT=- ignores it).
+      # The stale file is named after the GHC build platform and version
+      # that GHC itself reports, so no filename is hardcoded.
+      mkChecks =
+        system: pkgs:
+        let
+          ghc-with-tidal = self.packages.${system}.ghc-with-tidal;
+        in
+        {
+          triton = pkgs.runCommand "triton-tidal-smoke-test" { } ''
+            triton=${self.packages.${system}.triton}/bin/triton
+            if "$triton" --no-such-flag >usage.log 2>&1; then
+              echo "triton accepted an unknown flag" >&2
+              exit 1
+            fi
+            grep -q "usage: triton" usage.log
+
+            ghc=${ghc-with-tidal}/bin/ghc
+            mkdir cwd && cd cwd
+            plat=$($ghc --print-build-platform)
+            printf 'clear-package-db\nglobal-package-db\npackage-id base-0\n' \
+              > ".ghc.environment.''${plat%%-*}-''${plat##*-}-$($ghc --numeric-version)"
+            # The boot script is UTF-8 (em dashes in comments); the sandbox
+            # has no locale, so GHCi would decode it as ASCII and silently
+            # skip it. Force a UTF-8 locale before running GHCi.
+            LC_ALL=C.UTF-8 GHC_ENVIRONMENT=- ${ghc-with-tidal}/bin/ghci -v0 \
+              -ghci-script ${./boot/BootTidal-triton.hs} \
+              -e ':t d1' -e 'putStrLn "boot-smoke-ok"' > boot.log 2>&1
+            grep -q 'd1 ::' boot.log || { cat boot.log; exit 1; }
+            grep -q 'boot-smoke-ok' boot.log || { cat boot.log; exit 1; }
+            touch $out
+          '';
+        };
     in
     {
       packages = forAllSystems mkPackages;
+
+      checks = forAllSystems mkChecks;
 
       formatter = forAllSystems (system: pkgs: pkgs.nixfmt);
 

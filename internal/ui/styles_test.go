@@ -75,9 +75,13 @@ func TestModeForSize(t *testing.T) {
 		{"too small width only", 59, 40, ModeTooSmall},
 		{"too small height only", 100, 17, ModeTooSmall},
 		{"small at minimum", 60, 18, ModeSmall},
-		{"small below large threshold", 109, 33, ModeSmall},
+		{"small below large threshold", 109, 40, ModeSmall},
 		{"small wide but short", 120, 30, ModeSmall},
-		{"large at minimum", 110, 34, ModeLarge},
+		{"small below large pane minimum", 110, 31, ModeSmall},
+		// The pane-area minimum is 110x32: the help bar below the panes
+		// takes 2 more rows, so the user-facing minimum is 110x34.
+		{"large at pane minimum", 110, 32, ModeLarge},
+		{"large at user-facing minimum", 110, 34, ModeLarge},
 		{"large above minimum", 140, 40, ModeLarge},
 	}
 	for _, tt := range tests {

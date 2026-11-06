@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/rivo/uniseg"
 )
 
 func keyMsg(kind tea.KeyType) tea.KeyMsg {
@@ -141,29 +142,115 @@ func TestRevisionMatchesContentChange(t *testing.T) {
 	}
 }
 
-// The soft-wrap memoizer must keep rows across frames, and a resize must drop
-// them because every row wraps at the new width.
-func TestWrapCacheValidity(t *testing.T) {
+// Repeated frames that change nothing (cursor blinks, highlight refreshes)
+// must reuse the memoized rows for every line, offscreen ones included,
+// without re-wrapping any of them.
+func TestWrapCacheReuseAcrossFrames(t *testing.T) {
 	m := areaWithLines(t, "alpha beta gamma\ndelta epsilon", 40, 4)
-	m = step(m, keyMsg(tea.KeyCtrlHome))
-	lineOne := m.memoizedWrap(m.value[0], m.width)
-	lineTwo := m.memoizedWrap(m.value[1], m.width)
+	_ = m.View() // first frame wraps and memoizes every line
+
+	for i := range m.value {
+		rows := m.memoizedWrap(i)
+		_ = m.View() // frame with no buffer change
+		if again := m.memoizedWrap(i); &rows[0] != &again[0] {
+			t.Errorf("unchanged frame re-wrapped line %d", i)
+		}
+	}
+}
+
+// An edit bumps the revision, which must invalidate rows memoized before it,
+// even for lines the edit never touched.
+func TestWrapCacheInvalidatedByEdit(t *testing.T) {
+	m := areaWithLines(t, "alpha beta gamma\ndelta epsilon", 40, 4)
+	_ = m.View()
+	stale := m.memoizedWrap(1)
+	before := m.Revision()
 
 	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")})
 
-	if &lineTwo[0] != &m.memoizedWrap(m.value[1], m.width)[0] {
-		t.Errorf("untouched line was re-wrapped")
+	if _, ok := m.wraps.get(1, before, m.width); ok {
+		t.Errorf("rows memoized before the edit are still served after it")
 	}
-	if _, ok := m.wraps.get([]rune("zalpha beta gamma"), m.width); !ok {
-		t.Errorf("the edited line has no memoized rows for its new content")
+	if fresh := m.memoizedWrap(1); &fresh[0] == &stale[0] {
+		t.Errorf("edit must invalidate rows for untouched lines")
 	}
-	if strings.Contains(string(lineOne[0]), "z") {
-		t.Errorf("cached rows were rewritten in place: %q", string(lineOne[0]))
+	// Rows already handed out must not be rewritten in place.
+	if got := string(stale[0]); strings.Contains(got, "z") {
+		t.Errorf("memoized rows were mutated: %q", got)
 	}
+}
+
+// A resize re-wraps every line, so the memoizer must drop the old rows.
+func TestWrapCacheInvalidatedByResize(t *testing.T) {
+	m := areaWithLines(t, "alpha beta gamma", 40, 4)
+	_ = m.View()
+	wide := m.memoizedWrap(0)
 
 	m.SetWidth(12)
-	if len(m.wraps.entries) != 0 {
-		t.Errorf("resizing must drop cached wraps, got %d entries", len(m.wraps.entries))
+	_ = m.View()
+
+	if narrow := m.memoizedWrap(0); &narrow[0] == &wide[0] || len(narrow) <= 1 {
+		t.Errorf("resize must re-wrap at the new width, got %d rows", len(narrow))
+	}
+}
+
+// Frames with no buffer change must render byte-identical views; the wrap
+// memoizer may not perturb the output between frames.
+func TestViewStableAcrossFrames(t *testing.T) {
+	doc := "d1 $ sound \"bd sn\"\nd2 $ sound \"cp\"\n" + strings.Repeat("pat 1 pat 2\n", 30)
+	m := areaWithLines(t, strings.TrimRight(doc, "\n"), 30, 4)
+
+	first := m.View()
+	_ = m.View()
+	third := m.View()
+	if third != first || m.View() != first {
+		t.Fatalf("view changed across unchanged frames:\nfirst: %q\nthird:  %q", first, third)
+	}
+}
+
+// Buffers can hold more lines than MaxHeight (loading a document does not
+// shrink to the cap), so a 100-line buffer must render three-digit line
+// numbers without pushing the text out of the frame.
+func TestLineNumberGutterFitsThreeDigitLines(t *testing.T) {
+	var document strings.Builder
+	for line := 1; line < 100; line++ {
+		fmt.Fprintf(&document, "line %d\n", line)
+	}
+	lastLine := strings.Repeat("x", 36)
+	document.WriteString(lastLine)
+
+	m := areaWithLines(t, document.String(), 40, 4)
+	m.ShowLineNumbers = true
+	m.SetWidth(40)
+	m = step(m, keyMsg(tea.KeyCtrlEnd))
+	m.SetCursor(0)
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, lastLine) {
+		t.Fatalf("line 100 content was clipped:\n%s", view)
+	}
+	for _, row := range strings.Split(view, "\n") {
+		if cols := uniseg.StringWidth(row); cols > 40 {
+			t.Errorf("row is %d columns wide, wider than the 40-column frame: %q", cols, row)
+		}
+	}
+}
+
+// The gutter reservation and the rendered line-number width must agree, or
+// the widest numbers eat into the text area one column at a time.
+func TestLineNumberGutterMatchesRenderedNumbers(t *testing.T) {
+	m := New()
+	m.Prompt = ""
+	m.ShowLineNumbers = true
+	m.SetValue(strings.Repeat("line\n", 99) + "last")
+	m.SetWidth(40)
+
+	number := m.formatLineNumber(100)
+	if got := uniseg.StringWidth(number); got != 4 {
+		t.Errorf("line 100 number renders %d columns, want 4: %q", got, number)
+	}
+	if want := 40 - 4; m.width != want {
+		t.Errorf("text width = %d, want %d (frame minus gutter)", m.width, want)
 	}
 }
 

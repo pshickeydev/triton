@@ -43,6 +43,7 @@ const (
 	errCursorListener    = "cursor listener: "
 	msgGhciRestarting    = "restarting GHCi..."
 	msgGhciRestarted     = "GHCi restarted"
+	setcpsFmt            = "setcps %g"
 	msgSuperdirtStarting = statusPrefix + "starting SuperDirt..."
 	msgSuperdirtReady    = statusPrefix + "SuperDirt ready"
 	quitWarningText      = "Press Ctrl-C again to quit, Esc to cancel"
@@ -118,6 +119,22 @@ type ghciOutputMsg struct {
 
 type ghciDoneMsg struct {
 	epoch int
+}
+
+// evalDoneMsg reports the outcome of an asynchronous evaluation. epoch
+// tags the GHCi process the code was sent to, so a result from a
+// superseded or restarted process is ignored.
+type evalDoneMsg struct {
+	code  string
+	epoch int
+	err   error
+}
+
+// tempoAppliedMsg reports the outcome of applying the startup tempo to
+// a freshly booted GHCi.
+type tempoAppliedMsg struct {
+	epoch int
+	err   error
 }
 
 // ghciRestartedMsg delivers the outcome of an asynchronous GHCi restart.
@@ -229,7 +246,7 @@ type Model struct {
 	restarting  bool
 	spans       cursor.Spans
 	spanStyles  []lipgloss.Style
-	segs        map[int][]string
+	segs        map[int][]tidal.Segment
 	segsRev     uint64
 	hlCh        <-chan cursor.Highlight
 	warnCh      <-chan string
@@ -242,6 +259,10 @@ type GhciConfig struct {
 	Executable string
 	BootScript string
 	WorkingDir string
+	// Tempo is the cps applied to a freshly booted GHCi, so restarts
+	// run at the configured tempo instead of the boot default. Zero
+	// leaves the boot default alone.
+	Tempo float64
 }
 
 // newGhci spawns the GHCi session a restart reconnects to.
@@ -334,16 +355,31 @@ func WithSclangReady(ready <-chan bool) Option {
 }
 
 // WithDocument binds the editor to a document and preloads its content
-// into the buffer.
+// into the buffer, marking its patterns unevaluated like an interactive
+// file load.
 func WithDocument(d *doc.Doc) Option {
 	return func(m *Model) {
 		m.doc = d
 		m.textarea.SetValue(d.Content())
+		m.refreshEdited()
 	}
+}
+
+// Close releases the model's current GHCi session. The session can be
+// replaced by a restart, so shutdown paths must ask the model for its
+// current process rather than one captured at startup.
+func (m Model) Close() error {
+	if m.ghciProc == nil {
+		return nil
+	}
+	return m.ghciProc.Close()
 }
 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{textarea.Blink, m.waitForGhciOutput()}
+	if m.ghciCfg.Tempo > 0 && m.ghciProc != nil {
+		cmds = append(cmds, m.applyTempo(m.ghciProc, m.ghciCfg.Tempo))
+	}
 	if m.warnCh != nil {
 		cmds = append(cmds, m.waitForSclangWarning())
 	}
@@ -417,18 +453,17 @@ func nextSpanTick() tea.Cmd {
 	})
 }
 
+// waitForGhciOutput waits for the next GHCi output line, draining the
+// channel until it closes: the final lines of a dying process must not
+// be lost to the done signal arriving first.
 func (m Model) waitForGhciOutput() tea.Cmd {
 	epoch := m.epoch
 	return func() tea.Msg {
-		select {
-		case out, ok := <-m.ghciProc.Output():
-			if !ok {
-				return ghciDoneMsg{epoch: epoch}
-			}
-			return ghciOutputMsg{text: out.Text, isError: out.IsError, epoch: epoch}
-		case <-m.ghciProc.Done():
+		out, ok := <-m.ghciProc.Output()
+		if !ok {
 			return ghciDoneMsg{epoch: epoch}
 		}
+		return ghciOutputMsg{text: out.Text, isError: out.IsError, epoch: epoch}
 	}
 }
 
@@ -555,8 +590,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.epoch != m.epoch {
 			return m, nil
 		}
+		// The process is gone: stop claiming its playing patterns, spans,
+		// and transport state.
+		m.tracker.Reset()
 		m.tracker.SetGhciOK(false)
+		m.spans.Clear()
+		m.refreshEdited()
+		m.refreshSpans()
 		m.console.AddOutput(errPrefix + errGhciExited)
+
+	case evalDoneMsg:
+		if msg.epoch != m.epoch {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.console.AddOutput(errPrefix + errEval + msg.err.Error())
+			return m, nil
+		}
+		m.markEvaluated(msg.code)
+		m.refreshSpans()
+
+	case tempoAppliedMsg:
+		if msg.epoch != m.epoch {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.console.AddOutput(errPrefix + errTempo + msg.err.Error())
+		}
 
 	case ghciRestartedMsg:
 		m.restarting = false
@@ -566,16 +626,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ghciProc = msg.proc
 			m.tracker.SetGhciOK(true)
 			m.console.AddOutput(statusPrefix + msgGhciRestarted)
+			if m.ghciCfg.Tempo > 0 {
+				m.tracker.SetCPS(m.ghciCfg.Tempo)
+				cmds = append(cmds, m.applyTempo(msg.proc, m.ghciCfg.Tempo))
+			}
 		}
 		if m.quitting {
 			// A quit was requested while the restart was in flight;
 			// complete it now that the process handle is settled.
 			return m, m.quitCmd()
 		}
-		if msg.err != nil {
-			return m, nil
+		if msg.err == nil {
+			cmds = append(cmds, m.waitForGhciOutput())
 		}
-		return m, m.waitForGhciOutput()
 
 	case sclangWarnMsg:
 		m.console.AddError(msg.text)
@@ -661,7 +724,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // per message without changing anything.
 func editorTakesInput(msg tea.Msg) bool {
 	switch msg.(type) {
-	case ghciOutputMsg, ghciDoneMsg, ghciRestartedMsg, sclangWarnMsg, sclangReadyMsg,
+	case ghciOutputMsg, ghciDoneMsg, ghciRestartedMsg, evalDoneMsg, tempoAppliedMsg,
+		sclangWarnMsg, sclangReadyMsg,
 		highlightsMsg, spanTickMsg, cursorDoneMsg, cursorErrMsg,
 		tea.WindowSizeMsg:
 		return false
@@ -828,7 +892,7 @@ func (m Model) helpMsg() string {
 // helpText names the mute and solo shortcut ranges for the configured
 // number of visible streams, capped at the available shortcut keys.
 func (m Model) helpText() string {
-	n := min(len(m.tracker.Streams()), keyStreamCount)
+	n := min(m.tracker.Visible(), keyStreamCount)
 	mute := keyRange("F1", "F"+strconv.Itoa(n))
 	solo := keyRange("Alt-1", strconv.Itoa(n))
 	if m.layout.Mode() == ui.ModeSmall {
@@ -902,7 +966,11 @@ func (m *Model) refreshSpans() {
 	m.textarea.SetHighlights(m.spanHighlights())
 }
 
-// dropStaleSpans removes spans whose buffer positions went stale.
+// dropStaleSpans removes spans whose buffer positions went stale. A
+// span's line coordinates must fall inside the line range of the stream's
+// evaluated segment as it sits in the editor: when the code moves (e.g. a
+// line is inserted above it), the old coordinates no longer point at the
+// pattern.
 func (m *Model) dropStaleSpans() {
 	segments := m.streamSegs()
 	playing := m.tracker.Playing()
@@ -916,7 +984,12 @@ func (m *Model) dropStaleSpans() {
 			return true
 		}
 		segs, inEditor := segments[span.Stream]
-		return !inEditor || !containsSegment(segs, tidal.Normalize(code))
+		seg, matched := matchSegment(segs, tidal.Normalize(code))
+		if !inEditor || !matched {
+			return true
+		}
+		// Span lines are 1-based; seg covers the 0-based lines Start..End.
+		return span.Line < seg.Start+1 || span.EndLine > seg.End+1
 	})
 }
 
@@ -961,6 +1034,10 @@ func spanStyle(color lipgloss.Color) lipgloss.Style {
 }
 
 func (m Model) handleEvaluate(mode evalMode) (tea.Model, tea.Cmd) {
+	if m.restarting {
+		// The process is being replaced; evaluating into it would be lost.
+		return m, nil
+	}
 	lines := strings.Split(m.documentText(), "\n")
 	lineNum := m.textarea.Line()
 
@@ -979,28 +1056,41 @@ func (m Model) handleEvaluate(mode evalMode) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	err := m.evaluate(code, startLine)
-	if err != nil {
-		m.console.AddOutput(errPrefix + errEval + err.Error())
-		return m, nil
-	}
-	m.markEvaluated(code)
-	m.refreshSpans()
-	return m, nil
+	return m, m.evaluateCmd(code, startLine)
 }
 
-// evaluate sends code to GHCi. With the cursor enabled, the code is first
-// rewritten so mininotation events report buffer-absolute positions; only
-// the text written to GHCi is rewritten, the original is recorded for the
-// playing-vs-edited comparison.
-func (m Model) evaluate(code string, startLine int) error {
+// evaluateCmd sends code to GHCi as a command, so a blocked write to the
+// process cannot freeze the update loop. With the cursor enabled, the
+// text written to GHCi is first rewritten so mininotation events report
+// buffer-absolute positions; only the sent text is rewritten, the
+// original is carried along for the playing-vs-edited comparison. epoch
+// tags the target process so a result from a superseded or restarted
+// GHCi is ignored.
+func (m Model) evaluateCmd(code string, startLine int) tea.Cmd {
+	proc, epoch := m.ghciProc, m.epoch
+	send := code
 	if m.cursorOn {
-		code = deltamini.Delta(code, startLine)
+		send = deltamini.Delta(code, startLine)
 	}
-	if strings.Contains(code, "\n") {
-		return m.ghciProc.EvaluateMulti(code)
+	return func() tea.Msg {
+		var err error
+		if strings.Contains(send, "\n") {
+			err = proc.EvaluateMulti(send)
+		} else {
+			err = proc.Evaluate(send)
+		}
+		return evalDoneMsg{code: code, epoch: epoch, err: err}
 	}
-	return m.ghciProc.Evaluate(code)
+}
+
+// applyTempo asks a freshly booted GHCi to run at cps, as a command so a
+// blocked write cannot freeze the update loop.
+func (m Model) applyTempo(proc Evaluator, cps float64) tea.Cmd {
+	epoch := m.epoch
+	code := fmt.Sprintf(setcpsFmt, cps)
+	return func() tea.Msg {
+		return tempoAppliedMsg{epoch: epoch, err: proc.Evaluate(code)}
+	}
 }
 
 // markEvaluated records the evaluated code for each stream it assigns so
@@ -1028,7 +1118,11 @@ func (m *Model) refreshEdited() {
 			continue
 		}
 		evaluated, wasPlaying := playing[n]
-		if !wasPlaying || !containsSegment(segs, tidal.Normalize(evaluated)) {
+		if !wasPlaying {
+			m.tracker.SetEdited(n)
+			continue
+		}
+		if _, matched := matchSegment(segs, tidal.Normalize(evaluated)); !matched {
 			m.tracker.SetEdited(n)
 			continue
 		}
@@ -1036,24 +1130,35 @@ func (m *Model) refreshEdited() {
 	}
 }
 
-func containsSegment(segs []string, normalizedCode string) bool {
-	return slices.Contains(segs, normalizedCode)
+// matchSegment returns the segment whose normalized text equals code.
+func matchSegment(segs []tidal.Segment, code string) (tidal.Segment, bool) {
+	for _, seg := range segs {
+		if seg.Text == code {
+			return seg, true
+		}
+	}
+	return tidal.Segment{}, false
 }
 
-// streamSegs returns the buffer's per-stream segments, normalized for
-// comparison. The segmentation is cached and recomputed only when the
-// buffer changed, so cursor highlight ticks do not reparse the buffer.
-func (m *Model) streamSegs() map[int][]string {
+// streamSegs returns the buffer's per-stream segments with their line
+// ranges, normalized for comparison. The segmentation is cached and
+// recomputed only when the buffer changed, so cursor highlight ticks do
+// not reparse the buffer.
+func (m *Model) streamSegs() map[int][]tidal.Segment {
 	if m.segsRev != m.textarea.Revision() {
-		m.segs = tidal.Segmented(m.documentText())
+		m.segs = tidal.Ranged(m.documentText())
 		m.segsRev = m.textarea.Revision()
 	}
 	return m.segs
 }
 
 func (m Model) handleHush() (tea.Model, tea.Cmd) {
+	if m.restarting {
+		return m, nil
+	}
 	if err := m.oscClient.Hush(); err != nil {
 		m.console.AddOutput(errPrefix + errHush + err.Error())
+		return m, nil
 	}
 	m.tracker.HushAll()
 	m.spans.Clear()
@@ -1063,34 +1168,42 @@ func (m Model) handleHush() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleMuteAll() (tea.Model, tea.Cmd) {
+	if m.restarting {
+		return m, nil
+	}
 	if err := m.oscClient.MuteAll(); err != nil {
 		m.console.AddOutput(errPrefix + errMuteAll + err.Error())
+		return m, nil
 	}
-	for n := range m.tracker.Streams() {
-		m.tracker.SetMuted(n)
-	}
+	m.tracker.MuteAll()
 	return m, nil
 }
 
 func (m Model) handleUnmuteAll() (tea.Model, tea.Cmd) {
+	if m.restarting {
+		return m, nil
+	}
 	if err := m.oscClient.UnmuteAll(); err != nil {
 		m.console.AddOutput(errPrefix + errUnmuteAll + err.Error())
+		return m, nil
 	}
 	m.tracker.UnmuteAll()
 	return m, nil
 }
 
-// handleToggleMute toggles a stream's mute in the tracker and tells
-// Tidal. When the OSC send fails the tracker is restored to its previous
-// state so the panel never claims a state Tidal did not apply.
+// handleToggleMute toggles a stream's mute flag and tells Tidal. When
+// the OSC send fails the flag is toggled back so the panel never claims
+// a state Tidal did not apply; the solo flag is never touched.
 func (m Model) handleToggleMute(streamNum int) (tea.Model, tea.Cmd) {
-	prev, ok := m.tracker.Streams()[streamNum]
-	if !ok {
+	if m.restarting {
 		return m, nil
 	}
-	newState := m.tracker.ToggleMute(streamNum)
+	if _, ok := m.tracker.Streams()[streamNum]; !ok {
+		return m, nil
+	}
+	muted := m.tracker.ToggleMute(streamNum)
 	var err error
-	if newState == status.StreamMuted {
+	if muted {
 		err = m.oscClient.Mute(streamNum)
 	} else {
 		err = m.oscClient.Unmute(streamNum)
@@ -1099,23 +1212,23 @@ func (m Model) handleToggleMute(streamNum int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.tracker.ToggleMute(streamNum)
-	if prev == status.StreamSoloed {
-		m.tracker.SetSoloed(streamNum)
-	}
 	m.console.AddOutput(errPrefix + errMuteToggle + err.Error())
 	return m, nil
 }
 
-// handleToggleSolo toggles a stream's solo in the tracker and tells Tidal,
-// restoring the previous state when the OSC send fails.
+// handleToggleSolo toggles a stream's solo flag and tells Tidal,
+// toggling the flag back when the OSC send fails. The mute flag is
+// never touched.
 func (m Model) handleToggleSolo(streamNum int) (tea.Model, tea.Cmd) {
-	prev, ok := m.tracker.Streams()[streamNum]
-	if !ok {
+	if m.restarting {
 		return m, nil
 	}
-	newState := m.tracker.ToggleSolo(streamNum)
+	if _, ok := m.tracker.Streams()[streamNum]; !ok {
+		return m, nil
+	}
+	soloed := m.tracker.ToggleSolo(streamNum)
 	var err error
-	if newState == status.StreamSoloed {
+	if soloed {
 		err = m.oscClient.Solo(streamNum)
 	} else {
 		err = m.oscClient.Unsolo(streamNum)
@@ -1124,9 +1237,6 @@ func (m Model) handleToggleSolo(streamNum int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.tracker.ToggleSolo(streamNum)
-	if prev == status.StreamMuted {
-		m.tracker.SetMuted(streamNum)
-	}
 	m.console.AddOutput(errPrefix + errSoloToggle + err.Error())
 	return m, nil
 }
@@ -1141,7 +1251,9 @@ func (m Model) handleRestartGhci() (tea.Model, tea.Cmd) {
 	m.console.AddOutput(statusPrefix + msgGhciRestarting)
 	m.epoch++
 	m.restarting = true
-	m.tracker.HushAll()
+	// The replacement process boots with a fresh Tidal: nothing is
+	// playing and no transport state carries over.
+	m.tracker.Reset()
 	m.tracker.SetGhciOK(false)
 	m.spans.Clear()
 	m.refreshEdited()
@@ -1160,6 +1272,9 @@ func (m Model) handleRestartGhci() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleTempoUp() (tea.Model, tea.Cmd) {
+	if m.restarting {
+		return m, nil
+	}
 	newCPS := m.tracker.CPS() + tempoStep
 	if err := m.oscClient.SetTempo(newCPS); err != nil {
 		m.console.AddOutput(errPrefix + errTempo + err.Error())
@@ -1170,6 +1285,9 @@ func (m Model) handleTempoUp() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleTempoDown() (tea.Model, tea.Cmd) {
+	if m.restarting {
+		return m, nil
+	}
 	newCPS := m.tracker.CPS() - tempoStep
 	if newCPS < minTempo {
 		newCPS = minTempo

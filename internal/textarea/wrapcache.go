@@ -1,63 +1,50 @@
 package textarea
 
-// Meaningful values for the line-content hash: FNV-1a 64-bit parameters.
-const (
-	fnvOffsetBasis uint64 = 1469598103934665603
-	fnvPrime       uint64 = 1099511628211
+// maxWrapEntries bounds the memoizer: entries are keyed by line index for a
+// single buffer revision and width, so they are naturally limited by the
+// line count. The ceiling only guards a model whose line limit is disabled
+// from growing the cache without bound.
+const maxWrapEntries = 2048
 
-	// maxWrapEntries bounds the memoizer: identical lines share an entry, so
-	// normal buffers stay far below it, and a long session cannot grow it
-	// without limit.
-	maxWrapEntries = 2048
-)
-
-// wrapKey identifies one memoized soft-wrap result: a line's contents (by
-// hash and length) plus the width it was wrapped at. A resize invalidates
-// every entry; an edit invalidates only the edited line.
-type wrapKey struct {
-	hash  uint64
-	size  int
-	width int
-}
-
-// wrapCache memoizes soft-wrapped rows per line contents.
+// wrapCache memoizes soft-wrapped rows by buffer line index. Entries are
+// valid only for the revision and width they were wrapped at: any edit or
+// resize invalidates them all, so repeated frames (cursor blinks, highlight
+// refreshes) cost one map lookup per line instead of re-wrapping, and an
+// edit only pays for the first frame that renders it.
 type wrapCache struct {
-	entries map[wrapKey][][]rune
+	rev   uint64
+	width int
+	rows  map[int][][]rune
 }
 
 func newWrapCache() *wrapCache {
-	return &wrapCache{entries: make(map[wrapKey][][]rune)}
+	return &wrapCache{}
 }
 
-// hashLine folds a line's runes into a 64-bit FNV-1a value.
-func hashLine(runes []rune) uint64 {
-	h := fnvOffsetBasis
-	for _, r := range runes {
-		h = (h ^ uint64(r)) * fnvPrime
+// get returns the memoized rows for a line, if they were wrapped for the
+// given revision and width.
+func (c *wrapCache) get(index int, rev uint64, width int) ([][]rune, bool) {
+	if c.rev != rev || c.width != width || c.rows == nil {
+		return nil, false
 	}
-	return h
-}
-
-func wrapKeyOf(runes []rune, width int) wrapKey {
-	return wrapKey{hash: hashLine(runes), size: len(runes), width: width}
-}
-
-// get returns the cached rows for a line, if any.
-func (c *wrapCache) get(runes []rune, width int) ([][]rune, bool) {
-	rows, ok := c.entries[wrapKeyOf(runes, width)]
+	rows, ok := c.rows[index]
 	return rows, ok
 }
 
-// put stores a line's rows, dropping everything when the memoizer outgrows
-// its ceiling rather than letting a long session grow it without bound.
-func (c *wrapCache) put(runes []rune, width int, rows [][]rune) {
-	if len(c.entries) > maxWrapEntries {
-		c.clear()
+// put stores a line's rows for the given revision and width, replacing every
+// older entry when either changed.
+func (c *wrapCache) put(index int, rev uint64, width int, rows [][]rune) {
+	if c.rev != rev || c.width != width || c.rows == nil {
+		c.rev, c.width, c.rows = rev, width, make(map[int][][]rune)
 	}
-	c.entries[wrapKeyOf(runes, width)] = rows
+	if len(c.rows) > maxWrapEntries {
+		clear(c.rows)
+	}
+	c.rows[index] = rows
 }
 
-// clear empties the memoizer.
+// clear drops every entry so nothing is served until rows are memoized
+// again.
 func (c *wrapCache) clear() {
-	clear(c.entries)
+	c.rows = nil
 }

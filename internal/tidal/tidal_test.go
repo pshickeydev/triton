@@ -136,15 +136,66 @@ func TestStreamSegments(t *testing.T) {
 	}
 }
 
-func TestSegmented_NormalizesSegments(t *testing.T) {
+func TestRanged_NormalizesSegments(t *testing.T) {
 	code := "d1  $   sound \"bd\"\n  #  speed \"2\"\n\nlet x = 2\nd2 $ sound \"cp\""
 
-	segs := Segmented(code)
-	wantFirst := "d1 $ sound \"bd\"\n# speed \"2\""
+	segs := Ranged(code)
+	wantFirst := Segment{Text: "d1 $ sound \"bd\"\n# speed \"2\"", Start: 0, End: 1}
 	if segs[1][0] != wantFirst {
-		t.Errorf("normalized d1 segment = %q, want %q", segs[1][0], wantFirst)
+		t.Errorf("normalized d1 segment = %+v, want %+v", segs[1][0], wantFirst)
 	}
-	if segs[2][0] != "d2 $ sound \"cp\"" {
-		t.Errorf("normalized d2 segment = %q", segs[2][0])
+	if segs[2][0] != (Segment{Text: `d2 $ sound "cp"`, Start: 4, End: 4}) {
+		t.Errorf("normalized d2 segment = %+v", segs[2][0])
+	}
+}
+
+func TestRanged_TracksLineRanges(t *testing.T) {
+	code := "d1 $ sound \"bd\"\n  # speed \"2\"\n\nlet x = 2\nd2 $ sound \"cp\"\nd1 $ sound \"sn\""
+
+	segs := Ranged(code)
+	if segs[1][1] != (Segment{Text: `d1 $ sound "sn"`, Start: 5, End: 5}) {
+		t.Errorf("second d1 segment = %+v, want lines 5-5", segs[1][1])
+	}
+	if segs[2][0] != (Segment{Text: `d2 $ sound "cp"`, Start: 4, End: 4}) {
+		t.Errorf("d2 segment = %+v, want lines 4-4", segs[2][0])
+	}
+}
+
+// GHCi groups unindented lines into independent statements, so a
+// non-assignment line after a d-stream segment must not be absorbed
+// into the segment above it.
+func TestSegmentsIndependentStatement(t *testing.T) {
+	segs := Segments("d1 $ sound \"bd\"\nsetcps 0.8")
+	if got := segs[1][0]; got != `d1 $ sound "bd"` {
+		t.Fatalf("d1 segment absorbed independent statement: %q", got)
+	}
+}
+
+func TestSegmentsMixedStatements(t *testing.T) {
+	code := "d1 $ sound \"bd\"\n  # speed \"2\"\nsetcps 0.8\n-- a note\nd2 $ sound \"cp\""
+	segs := Segments(code)
+
+	if got := segs[1][0]; got != "d1 $ sound \"bd\"\n  # speed \"2\"" {
+		t.Errorf("d1 segment = %q, want only its two-line statement", got)
+	}
+	if _, ok := segs[2]; !ok {
+		t.Fatal("d2 segment missing")
+	}
+	if got := segs[2][0]; got != `d2 $ sound "cp"` {
+		t.Errorf("d2 segment = %q, want %q", got, `d2 $ sound "cp"`)
+	}
+	if len(segs) != 2 {
+		t.Errorf("unassigned statements belong to no stream, got streams %v", segs)
+	}
+}
+
+func TestSegmentsUnindentedAssignmentEndsSegment(t *testing.T) {
+	code := "d1 $ sound \"bd\"\nd2 $ sound \"cp\""
+	segs := Segments(code)
+	if len(segs[1]) != 1 || segs[1][0] != `d1 $ sound "bd"` {
+		t.Errorf("d1 segment = %v, want a single unabsorbed statement", segs[1])
+	}
+	if len(segs[2]) != 1 || segs[2][0] != `d2 $ sound "cp"` {
+		t.Errorf("d2 segment = %v, want a single unabsorbed statement", segs[2])
 	}
 }

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,7 +114,9 @@ func Load() (*Config, error) {
 		}
 	}
 
-	applyEnvOverrides(&cfg)
+	if err := applyEnvOverrides(&cfg); err != nil {
+		return nil, err
+	}
 	cfg.GHCi.BootScript = expandHome(cfg.GHCi.BootScript)
 	cfg.GHCi.WorkingDir = expandHome(cfg.GHCi.WorkingDir)
 	cfg.SuperDirt.BootScript = expandHome(cfg.SuperDirt.BootScript)
@@ -133,6 +136,9 @@ const (
 func (c *Config) validate() error {
 	if c.UI.VisibleStreams < 1 || c.UI.VisibleStreams > tidal.MaxStream {
 		return fmt.Errorf("ui.visible_streams must be 1-%d, got %d", tidal.MaxStream, c.UI.VisibleStreams)
+	}
+	if math.IsNaN(c.UI.DefaultTempo) || math.IsInf(c.UI.DefaultTempo, 0) {
+		return fmt.Errorf("ui.default_tempo must be a finite positive number, got %g", c.UI.DefaultTempo)
 	}
 	if c.UI.DefaultTempo <= 0 {
 		return fmt.Errorf("ui.default_tempo must be positive, got %g", c.UI.DefaultTempo)
@@ -221,7 +227,7 @@ func expandHome(path string) string {
 	return path
 }
 
-func applyEnvOverrides(cfg *Config) {
+func applyEnvOverrides(cfg *Config) error {
 	if v := os.Getenv("TIDAL_CHARM_GHCI_EXECUTABLE"); v != "" {
 		cfg.GHCi.Executable = v
 	}
@@ -235,22 +241,31 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.OSC.TidalControlHost = v
 	}
 	if v := os.Getenv("TIDAL_CHARM_OSC_TIDAL_CONTROL_PORT"); v != "" {
-		if port, err := strconv.Atoi(v); err == nil {
-			cfg.OSC.TidalControlPort = port
+		port, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("invalid TIDAL_CHARM_OSC_TIDAL_CONTROL_PORT %q: %w", v, err)
 		}
+		cfg.OSC.TidalControlPort = port
 	}
 	if v := os.Getenv("TIDAL_CHARM_UI_THEME"); v != "" {
 		cfg.UI.Theme = v
 	}
 	if v := os.Getenv("TIDAL_CHARM_UI_DEFAULT_TEMPO"); v != "" {
-		if tempo, err := strconv.ParseFloat(v, 64); err == nil {
-			cfg.UI.DefaultTempo = tempo
+		tempo, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return fmt.Errorf("invalid TIDAL_CHARM_UI_DEFAULT_TEMPO %q: %w", v, err)
 		}
+		if math.IsNaN(tempo) || math.IsInf(tempo, 0) {
+			return fmt.Errorf("invalid TIDAL_CHARM_UI_DEFAULT_TEMPO %q: not a finite number", v)
+		}
+		cfg.UI.DefaultTempo = tempo
 	}
 	if v := os.Getenv("TIDAL_CHARM_UI_VISIBLE_STREAMS"); v != "" {
-		if streams, err := strconv.Atoi(v); err == nil {
-			cfg.UI.VisibleStreams = streams
+		streams, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("invalid TIDAL_CHARM_UI_VISIBLE_STREAMS %q: %w", v, err)
 		}
+		cfg.UI.VisibleStreams = streams
 	}
 	if v := os.Getenv("TIDAL_CHARM_SUPERDIRT_EXECUTABLE"); v != "" {
 		cfg.SuperDirt.Executable = v
@@ -259,24 +274,31 @@ func applyEnvOverrides(cfg *Config) {
 		cfg.SuperDirt.BootScript = v
 	}
 	if v := os.Getenv("TIDAL_CHARM_SUPERDIRT_AUTO_START"); v != "" {
-		if autoStart, err := strconv.ParseBool(v); err == nil {
-			cfg.SuperDirt.AutoStart = autoStart
+		autoStart, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("invalid TIDAL_CHARM_SUPERDIRT_AUTO_START %q: %w", v, err)
 		}
+		cfg.SuperDirt.AutoStart = autoStart
 	}
 	if v := os.Getenv("TIDAL_CHARM_CURSOR_ENABLED"); v != "" {
-		if enabled, err := strconv.ParseBool(v); err == nil {
-			cfg.Cursor.Enabled = enabled
+		enabled, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("invalid TIDAL_CHARM_CURSOR_ENABLED %q: %w", v, err)
 		}
+		cfg.Cursor.Enabled = enabled
 	}
 	if v := os.Getenv("TIDAL_CHARM_CURSOR_HOST"); v != "" {
 		cfg.Cursor.Host = v
 	}
 	if v := os.Getenv("TIDAL_CHARM_CURSOR_PORT"); v != "" {
-		if port, err := strconv.Atoi(v); err == nil {
-			cfg.Cursor.Port = port
+		port, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("invalid TIDAL_CHARM_CURSOR_PORT %q: %w", v, err)
 		}
+		cfg.Cursor.Port = port
 	}
 	if v := os.Getenv("TIDAL_CHARM_CURSOR_BOOT_SCRIPT"); v != "" {
 		cfg.Cursor.BootScript = v
 	}
+	return nil
 }

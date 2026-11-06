@@ -50,7 +50,7 @@ flowchart TD
 The TUI manages three subprocess lifecycles:
 
 - **SuperCollider/SuperDirt** (`internal/superdirt/process.go`): Started concurrently with GHCi on launch. Scans stdout for the `SuperDirt` ready marker, reported to the console asynchronously. Has a 30-second boot timeout. Cleaned up on exit.
-- **GHCi** (`internal/ghci/process.go`): Started after SuperDirt is ready. Sends `:script BootTidal.hs` through stdin on startup. Supports restart via `Ctrl-R` using an epoch counter to invalidate stale goroutines; the close-and-respawn runs in a Bubble Tea command so a slow shutdown does not freeze the UI, and a quit requested during a restart completes once the restart settles. Graceful shutdown with a 3-second timeout before kill.
+- **GHCi** (`internal/ghci/process.go`): started alongside SuperDirt without waiting for the audio engine to be ready. Sends `:script BootTidal.hs` through stdin on startup. Supports restart via `Ctrl-R` using an epoch counter to invalidate stale goroutines; the close-and-respawn runs in a Bubble Tea command so a slow shutdown does not freeze the UI, and a quit requested during a restart completes once the restart settles. Graceful shutdown with a 3-second timeout before kill.
 - **Cleanup order**: the model closes the current GHCi process before quitting (restarts replace the process, so the model owns the live handle), then `main`'s deferred closes act as a safety net for GHCi and SuperDirt.
 
 ## 3. Components
@@ -72,7 +72,7 @@ tested with fakes and the drivers can evolve independently.
 **GHCi evaluation details:**
 - Multi-line blocks sent using GHCi's `:{` ... `:}` delimiters, with independent statements sent as single lines
 - Single-line evaluation sends the code followed by a newline
-- BootTidal.hs path is configurable; default points to the cabal store location
+- BootTidal.hs path is configurable (`ghci.boot_script`); with the cursor enabled the boot script bundled with the binary (`boot/BootTidal-triton.hs`) is used, otherwise a configured path is required (its absence is reported by the dependency check)
 - GHCi process is started from the project directory so the `.ghc.environment` file (created by `cabal install --lib tidal --package-env .`) makes Tidal visible without global registration
 
 **SuperDirt details:**
@@ -131,9 +131,9 @@ Tidal does not expose rich state over OSC. Options for getting state:
 3. **OSC snooping**: Listen on a promiscuous OSC sniffer to observe outbound messages to SuperDirt (port 57120). Can infer active streams from which `/dirt/play` messages are flowing. This is a read-only tap that doesn't interfere.
 4. **Manual tracking**: The TUI tracks its own commands (which streams it muted/soloed) and displays that state. Doesn't reflect changes made outside the TUI (e.g., from another editor), but is simplest to implement.
 
-**Current approach:** Option 4 (manual tracking) is implemented. The `status.Tracker` maintains stream state (idle/active/muted/soloed) with mutex-protected access. Mute and solo toggles revert to the previous state when the OSC send fails, so the panel never claims a state Tidal did not apply. The `status.Panel` renders the tracker state using the stream palette derived from the active theme.
+**Current approach:** Option 4 (manual tracking) is implemented. The `status.Tracker` keeps Tidal's mute and solo as independent per-stream flags, deriving display state with solo precedence; valid d1-d16 streams stay tracked even when the panel shows fewer of them. Mute and solo toggles revert to the previous state when the OSC send fails, so the panel never claims a state Tidal did not apply. The `status.Panel` renders the tracker state using the stream palette derived from the active theme.
 
-**Playing vs edited:** Pattern code is compared per stream, not per block. The segmentation itself lives in `internal/tidal` (`Segments`/`Segmented`/`Normalize`), shared by evaluation tracking and the editor comparison. Both the editor and the evaluated code are split into segments: a segment starts at a `dn $` assignment line and ends at the next assignment or blank line, so continuation lines belong to the pattern above them. Successful evaluation records each stream's segment of the evaluated code (`Tracker.SetPlaying`, keeping muted/soloed transport state intact); when a block assigns the same stream more than once, the last assignment is the one playing. Whenever the editor content changes, the model recomputes for each stream whether the code last evaluated for it still appears in the editor as one of its segments (modulo whitespace) and flags mismatches as edited: the pattern currently playing is not what the editor shows. This makes `Ctrl-J` (block) and `Ctrl-L` (line) behave consistently: evaluating a stream's full pattern clears its flag, evaluating only part of a multi-line pattern keeps it, and editing the editor afterwards restores it. Hush and GHCi restart clear all recorded playing code, since no pattern keeps playing after either. Unmuting (`Ctrl-U`, or the second press of a mute toggle) restores a muted stream to active only when a pattern is recorded as playing on it; otherwise it returns to idle, so "active" always means a pattern is playing.
+**Playing vs edited:** Pattern code is compared per stream, not per block. The segmentation itself lives in `internal/tidal` (`Segments`/`Ranged`/`Normalize`), shared by evaluation tracking and the editor comparison. Both the editor and the evaluated code are split into segments: a segment starts at a `dn $` assignment line and ends at the next assignment, a blank line, or an unindented independent statement, so indented lines belong to the pattern above them and GHCi statement grouping stays aligned. Successful evaluation records each stream's segment of the evaluated code and its source range (`Tracker.SetPlaying`, keeping mute/solo transport state intact); when a block assigns the same stream more than once, the last assignment is the one playing. Whenever the editor content changes, the model recomputes for each stream whether the code last evaluated for it still appears in the editor as one of its segments (modulo whitespace) and flags mismatches as edited: the pattern currently playing is not what the editor shows. Highlight span coordinates must also fall inside the recorded segment's source range, so moving unchanged code drops stale coordinates. This makes `Ctrl-J` (block) and `Ctrl-L` (line) behave consistently: evaluating a stream's full pattern clears its flag, evaluating only part of a multi-line pattern keeps it, and editing the editor afterwards restores it. Hush clears recorded playing code but keeps mute/solo flags; a GHCi restart resets both because the session starts fresh. Unmuting restores a muted stream to active only when a pattern is recorded as playing on it; otherwise it returns to idle, so "active" always means a pattern is playing.
 
 Caveats: evaluation is recorded optimistically — a Haskell error reported asynchronously by GHCi does not restore the marker — and transport expressions evaluated as editor text (e.g. a bare `hush` line) are not tracked; the marker reflects only what the TUI evaluated itself. Assignment detection matches `dn $` at the start of a line.
 
@@ -240,7 +240,7 @@ Buffer persistence for `.tidal` files (plain Haskell text, normalized to match t
 | `Alt-[` / `Alt-]` | Decrease / increase tempo (cps) |
 | `Tab` / `Shift-Tab` | Large: cycle focus between editor, status panel, and console. Small: swap between editor view and status+console view |
 | `Ctrl-R` | Restart GHCi process |
-| `Ctrl-S` | Save buffer to the current file (unsaved: prompts for a name; existing: asks to overwrite) |
+| `Ctrl-S` | Save buffer to the bound file (unbound: prompts for a save-as name; saving over an existing file from the prompt asks to overwrite) |
 | `Ctrl-O` | Open a `.tidal` file (type a path, `Enter` to load, `Esc` to cancel; unsaved changes ask first) |
 | `Ctrl-C` | Quit: first press shows a warning, second press quits (cleanup all subprocesses), `Esc` cancels |
 
@@ -276,7 +276,7 @@ auto_start = true                # Start SuperDirt automatically on launch
 
 [ui]
 theme = "dark"                   # dark | light
-default_tempo = 0.6              # Default cps
+default_tempo = 0.6              # applied after boot and restart
 visible_streams = 8              # How many d-streams to show (1-16)
 
 [cursor]
@@ -285,7 +285,7 @@ host = "127.0.0.1"               # Listener for Tidal's /editor/highlights
 port = 6013
 ```
 
-Environment variables override config file values with prefix `TIDAL_CHARM_`.
+Environment variables override config file values with prefix `TIDAL_CHARM_`. Malformed override values are rejected at startup with an error naming the variable and its value; `ui.default_tempo` must be a finite positive number (NaN/Infinity are rejected whether they come from the file or an override).
 
 ## 6. Project Structure
 
@@ -406,6 +406,8 @@ Goal: Real-time pattern visualization.
 | SuperCollider / sclang | Audio synthesis | Yes |
 | SuperDirt | SuperCollider quark for Tidal | Yes |
 | BootTidal.hs | Tidal boot script | Yes (bundled with Tidal) |
+
+The Nix flake's checks build triton and boot the bundled `BootTidal-triton.hs` under the Tidal version locked by the nixpkgs-unstable input — currently **Tidal 1.10.1** on GHC 9.10.3 — so a nixpkgs bump that breaks the boot path fails `nix flake check`.
 
 ## 9. Risks and Mitigations
 

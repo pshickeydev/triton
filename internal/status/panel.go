@@ -79,7 +79,9 @@ func (p Panel) View() string {
 	streams := p.tracker.Streams()
 	edited := p.tracker.Edited()
 	b.WriteString(styles.label.Render(labelStreams))
-	for i := 1; i <= len(streams); i++ {
+	// Hidden streams stay tracked for highlighting, but the panel lists
+	// only the configured number of them.
+	for i := 1; i <= p.tracker.Visible(); i++ {
 		state := streams[i]
 		label := fmt.Sprintf("d%d", i)
 		var s lipgloss.Style
