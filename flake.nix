@@ -68,11 +68,11 @@
 
           inherit ghc-with-tidal;
 
-          triton = pkgs.buildGoModule {
+          triton = pkgs.buildGoModule.override { go = pkgs.go_1_27; } {
             pname = "triton";
             version = "0.1.0";
             src = ./.;
-            vendorHash = "sha256-5KM/LJaYhu/7JAYLuGUgRYiL3evX0yryPSuXAh/Urro=";
+            vendorHash = "sha256-ADdr8i+UIU68NTRg6w8hib7DmWM1vDYGaOpV0GaWFWI=";
             # Stripping symbols and DWARF shrinks the binary by about a third;
             # Go panics still name functions without them.
             ldflags = [
@@ -157,7 +157,7 @@
         system: pkgs: {
           default = pkgs.mkShell {
             packages = [
-              pkgs.go
+              pkgs.go_1_27
               self.packages.${system}.ghc-with-tidal
               pkgs.cabal-install
             ]

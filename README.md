@@ -21,7 +21,7 @@ Otherwise:
 
 | Dependency | Purpose |
 |---|---|
-| [Go](https://go.dev/) 1.24+ | Build and run triton |
+| [Go](https://go.dev/) 1.27.3+ | Build and run triton |
 | [GHC](https://www.haskell.org/ghc/) / GHCi | Haskell runtime for Tidal |
 | [Tidal Cycles](https://tidalcycles.org/) | Pattern engine (Haskell library) |
 | [SuperCollider](https://supercollider.github.io/) + [SuperDirt](https://github.com/musikinformatik/SuperDirt) | Audio synthesis |
@@ -205,7 +205,7 @@ triton-install-superdirt   # first time only
 nix run github:pshickeydev/triton -- examples/basic.tidal
 ```
 
-Without Nix: requires Go 1.24+, GHC, and a working Tidal Cycles / SuperDirt setup (see [Prerequisites](#prerequisites)).
+Without Nix: requires Go 1.27.3+, GHC, and a working Tidal Cycles / SuperDirt setup (see [Prerequisites](#prerequisites)).
 
 ```bash
 go build -o triton .
@@ -252,5 +252,17 @@ triton/
 ## Development
 
 Run `gofmt -w` on modified Go files to keep formatting consistent. Use `nix develop` for a shell with all tooling (Go, GHC+Tidal, cabal, SuperCollider+sc3-plugins).
+
+### Testing
+
+Run everything with `go test ./...`. The `e2e` package drives the built
+triton binary inside an emulated terminal using
+[steep](https://getsteep.dev/steep), checking startup, layout modes, key
+handling, and the shutdown flow against a stubbed GHCi, so no GHC or
+audio is needed.
+
+Screens covered by a golden file live under `e2e/testdata`. After an
+intentional UI change, refresh them with `UPDATE_SNAPSHOTS=true go test
+./e2e/` and review the diff before committing.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for the full architecture document and [AGENTS.md](AGENTS.md) for code style and commit conventions.
