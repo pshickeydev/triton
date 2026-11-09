@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/pshickeydev/triton/internal/ui"
 )
 
@@ -11,7 +13,7 @@ func TestPanel_PlaysWithoutEdits(t *testing.T) {
 	tr := NewTracker(2)
 	tr.SetPlaying(1, "d1 $ sound \"bd\"")
 
-	view := NewPanel(tr, ui.DarkTheme().Palette).View()
+	view := ansi.Strip(NewPanel(tr, ui.DarkTheme().Palette).View())
 	if !strings.Contains(view, "d1 ") {
 		t.Errorf("playing stream should render without edited marker, got %q", view)
 	}
@@ -23,7 +25,7 @@ func TestPanel_MarksEditedStreams(t *testing.T) {
 	tr.SetPlaying(2, "d2 $ sound \"cp\"")
 	tr.SetEdited(2)
 
-	view := NewPanel(tr, ui.DarkTheme().Palette).View()
+	view := ansi.Strip(NewPanel(tr, ui.DarkTheme().Palette).View())
 	if !strings.Contains(view, "d2"+editedMarker) {
 		t.Errorf("edited stream should render with %q marker, got %q", editedMarker, view)
 	}
@@ -38,7 +40,7 @@ func TestPanel_MutedAndEditedCoexist(t *testing.T) {
 	tr.SetMuted(1)
 	tr.SetEdited(1)
 
-	view := NewPanel(tr, ui.DarkTheme().Palette).View()
+	view := ansi.Strip(NewPanel(tr, ui.DarkTheme().Palette).View())
 	if !strings.Contains(view, "d1"+editedMarker) {
 		t.Errorf("muted stream with edits should still show edited marker, got %q", view)
 	}
@@ -51,7 +53,7 @@ func TestPanel_MutedSoloedShowsSolo(t *testing.T) {
 	tr.SetMuted(1)
 	tr.SetSoloed(1)
 
-	view := NewPanel(tr, ui.DarkTheme().Palette).View()
+	view := ansi.Strip(NewPanel(tr, ui.DarkTheme().Palette).View())
 	if !strings.Contains(view, "d1 ") {
 		t.Errorf("muted+soloed stream should render without edited marker, got %q", view)
 	}
@@ -63,7 +65,7 @@ func TestPanel_ShowsOnlyVisibleStreams(t *testing.T) {
 	tr := NewTracker(2)
 	tr.SetPlaying(5, `d5 $ sound "bd"`)
 
-	view := NewPanel(tr, ui.DarkTheme().Palette).View()
+	view := ansi.Strip(NewPanel(tr, ui.DarkTheme().Palette).View())
 	if strings.Contains(view, "d5") {
 		t.Errorf("hidden stream should not render in the panel, got %q", view)
 	}

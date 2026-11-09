@@ -72,7 +72,7 @@
             pname = "triton";
             version = "0.1.0";
             src = ./.;
-            vendorHash = "sha256-ADdr8i+UIU68NTRg6w8hib7DmWM1vDYGaOpV0GaWFWI=";
+            vendorHash = "sha256-0R24w2/KDW6EVhVPwz2zCnPhuxbZjrmegWf710CX2F4=";
             # Stripping symbols and DWARF shrinks the binary by about a third;
             # Go panics still name functions without them.
             ldflags = [

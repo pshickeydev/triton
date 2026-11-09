@@ -4,8 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 )
 
 const (
@@ -48,7 +48,10 @@ func newPromptInput() textinput.Model {
 	input := textinput.New()
 	input.Placeholder = promptPlaceholder
 	input.CharLimit = 0
-	input.Width = promptInputWidth
+	input.SetWidth(promptInputWidth)
+	// The prompt renders as an overlay string, so the component must draw
+	// its own cursor instead of positioning the terminal cursor.
+	input.SetVirtualCursor(true)
 	return input
 }
 
@@ -96,7 +99,7 @@ func (m Model) handleSave() (tea.Model, tea.Cmd) {
 }
 
 // handlePromptKey routes keys to the filename input while it is open.
-func (m Model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handlePromptKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.promptOn = false
@@ -115,7 +118,7 @@ func (m Model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleConfirmKey routes keys while a file-action warning is shown: Enter
 // proceeds, Esc returns to the filename prompt, Ctrl-C asks to quit.
-func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		kind := m.confirm

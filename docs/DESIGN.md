@@ -389,9 +389,9 @@ Goal: Real-time pattern visualization.
 
 | Library | Purpose | Version |
 |---|---|---|
-| `github.com/charmbracelet/bubbletea` | TUI framework | latest |
-| `github.com/charmbracelet/lipgloss` | Styling and layout | latest |
-| `github.com/charmbracelet/bubbles` | textarea component | latest |
+| `charm.land/bubbletea/v2` | TUI framework | latest |
+| `charm.land/lipgloss/v2` | Styling and layout | latest |
+| `charm.land/bubbles/v2` | viewport, textinput, cursor components | latest |
 | `github.com/charmbracelet/harmonica` | Spring animation (phase 3) | latest |
 | `github.com/pshickeydev/go-osc` | OSC client for Tidal control | latest |
 | `github.com/BurntSushi/toml` | Configuration parsing | latest |

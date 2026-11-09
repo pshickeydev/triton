@@ -3,9 +3,9 @@ package status
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/pshickeydev/triton/internal/ui"
 )
@@ -31,7 +31,7 @@ type Log struct {
 }
 
 func NewLog(palette ui.Palette) *Log {
-	vp := viewport.New(0, 0)
+	vp := viewport.New()
 	return &Log{
 		palette:  palette,
 		viewport: vp,
@@ -41,8 +41,8 @@ func NewLog(palette ui.Palette) *Log {
 func (l *Log) SetSize(w, h int) {
 	l.width = w
 	l.height = h
-	l.viewport.Width = w
-	l.viewport.Height = max(h-1, minLogLines)
+	l.viewport.SetWidth(w)
+	l.viewport.SetHeight(max(h-1, minLogLines))
 	l.refresh()
 }
 

@@ -1,21 +1,25 @@
 package ui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"image/color"
+
+	"charm.land/lipgloss/v2"
+)
 
 type Theme struct {
-	Primary     lipgloss.Color
-	Accent      lipgloss.Color
-	Border      lipgloss.Color
-	FocusBorder lipgloss.Color
-	Background  lipgloss.Color
-	Foreground  lipgloss.Color
-	Muted       lipgloss.Color
-	Error       lipgloss.Color
-	Success     lipgloss.Color
+	Primary     color.Color
+	Accent      color.Color
+	Border      color.Color
+	FocusBorder color.Color
+	Background  color.Color
+	Foreground  color.Color
+	Muted       color.Color
+	Error       color.Color
+	Success     color.Color
 	Palette     Palette
 	// StreamColors color-codes the d-streams (d1 = red, d2 = blue, ...)
 	// for the pattern tracing cursor. Streams beyond the list cycle.
-	StreamColors []lipgloss.Color
+	StreamColors []color.Color
 }
 
 const (
@@ -58,21 +62,21 @@ const (
 
 var (
 	// Stream colors for the pattern tracing cursor, d1 onwards.
-	streamsDark  = []lipgloss.Color{"196", "39", "46", "226", "201", "51", "208", "141"}
-	streamsLight = []lipgloss.Color{"124", "25", "28", "130", "127", "30", "166", "61"}
+	streamsDark  = []color.Color{lipgloss.Color("196"), lipgloss.Color("39"), lipgloss.Color("46"), lipgloss.Color("226"), lipgloss.Color("201"), lipgloss.Color("51"), lipgloss.Color("208"), lipgloss.Color("141")}
+	streamsLight = []color.Color{lipgloss.Color("124"), lipgloss.Color("25"), lipgloss.Color("28"), lipgloss.Color("130"), lipgloss.Color("127"), lipgloss.Color("30"), lipgloss.Color("166"), lipgloss.Color("61")}
 )
 
 func DarkTheme() Theme {
 	return Theme{
-		Primary:      colorPrimary,
-		Accent:       colorAccent,
-		Border:       colorBorder,
-		FocusBorder:  colorAccent,
-		Background:   colorBgDark,
-		Foreground:   colorFgDark,
-		Muted:        colorMutedDark,
-		Error:        colorErrorDark,
-		Success:      colorSuccessDark,
+		Primary:      lipgloss.Color(colorPrimary),
+		Accent:       lipgloss.Color(colorAccent),
+		Border:       lipgloss.Color(colorBorder),
+		FocusBorder:  lipgloss.Color(colorAccent),
+		Background:   lipgloss.Color(colorBgDark),
+		Foreground:   lipgloss.Color(colorFgDark),
+		Muted:        lipgloss.Color(colorMutedDark),
+		Error:        lipgloss.Color(colorErrorDark),
+		Success:      lipgloss.Color(colorSuccessDark),
 		Palette:      DarkPalette(),
 		StreamColors: streamsDark,
 	}
@@ -80,15 +84,15 @@ func DarkTheme() Theme {
 
 func LightTheme() Theme {
 	return Theme{
-		Primary:      colorPrimaryLight,
-		Accent:       colorAccentLight,
-		Border:       colorBorderLight,
-		FocusBorder:  colorAccentLight,
-		Background:   colorBgLight,
-		Foreground:   colorFgLight,
-		Muted:        colorMutedLight,
-		Error:        colorErrorLight,
-		Success:      colorSuccessLight,
+		Primary:      lipgloss.Color(colorPrimaryLight),
+		Accent:       lipgloss.Color(colorAccentLight),
+		Border:       lipgloss.Color(colorBorderLight),
+		FocusBorder:  lipgloss.Color(colorAccentLight),
+		Background:   lipgloss.Color(colorBgLight),
+		Foreground:   lipgloss.Color(colorFgLight),
+		Muted:        lipgloss.Color(colorMutedLight),
+		Error:        lipgloss.Color(colorErrorLight),
+		Success:      lipgloss.Color(colorSuccessLight),
 		Palette:      LightPalette(),
 		StreamColors: streamsLight,
 	}
@@ -103,7 +107,7 @@ func ThemeFor(name string) Theme {
 
 // StreamColor returns the palette color for a 1-indexed d-stream,
 // cycling through the theme's stream colors for streams beyond it.
-func (t Theme) StreamColor(streamNum int) lipgloss.Color {
+func (t Theme) StreamColor(streamNum int) color.Color {
 	if streamNum < 1 || len(t.StreamColors) == 0 {
 		return t.Accent
 	}
@@ -111,38 +115,38 @@ func (t Theme) StreamColor(streamNum int) lipgloss.Color {
 }
 
 type Palette struct {
-	Active  lipgloss.Color
-	Muted   lipgloss.Color
-	Soloed  lipgloss.Color
-	Idle    lipgloss.Color
-	Label   lipgloss.Color
-	Edited  lipgloss.Color
-	GhciOK  lipgloss.Color
-	GhciErr lipgloss.Color
+	Active  color.Color
+	Muted   color.Color
+	Soloed  color.Color
+	Idle    color.Color
+	Label   color.Color
+	Edited  color.Color
+	GhciOK  color.Color
+	GhciErr color.Color
 }
 
 func DarkPalette() Palette {
 	return Palette{
-		Active:  colorActiveDark,
-		Muted:   colorMutedDark,
-		Soloed:  colorSoloedDark,
-		Idle:    colorIdleDark,
-		Label:   colorLabelDark,
-		Edited:  colorEditedDark,
-		GhciOK:  colorGhciOKDark,
-		GhciErr: colorGhciErrDark,
+		Active:  lipgloss.Color(colorActiveDark),
+		Muted:   lipgloss.Color(colorMutedDark),
+		Soloed:  lipgloss.Color(colorSoloedDark),
+		Idle:    lipgloss.Color(colorIdleDark),
+		Label:   lipgloss.Color(colorLabelDark),
+		Edited:  lipgloss.Color(colorEditedDark),
+		GhciOK:  lipgloss.Color(colorGhciOKDark),
+		GhciErr: lipgloss.Color(colorGhciErrDark),
 	}
 }
 
 func LightPalette() Palette {
 	return Palette{
-		Active:  colorActiveLight,
-		Muted:   colorStreamMutedLight,
-		Soloed:  colorSoloedLight,
-		Idle:    colorIdleLight,
-		Label:   colorLabelLight,
-		Edited:  colorEditedLight,
-		GhciOK:  colorGhciOKLight,
-		GhciErr: colorGhciErrLight,
+		Active:  lipgloss.Color(colorActiveLight),
+		Muted:   lipgloss.Color(colorStreamMutedLight),
+		Soloed:  lipgloss.Color(colorSoloedLight),
+		Idle:    lipgloss.Color(colorIdleLight),
+		Label:   lipgloss.Color(colorLabelLight),
+		Edited:  lipgloss.Color(colorEditedLight),
+		GhciOK:  lipgloss.Color(colorGhciOKLight),
+		GhciErr: lipgloss.Color(colorGhciErrLight),
 	}
 }

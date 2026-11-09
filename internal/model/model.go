@@ -2,14 +2,15 @@ package model
 
 import (
 	"fmt"
+	"image/color"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/pshickeydev/triton/internal/cursor"
 	"github.com/pshickeydev/triton/internal/deltamini"
@@ -471,7 +472,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if m.quitting {
 			// Shutdown is in progress (a deferred quit waits for a
 			// pending GHCi restart); ignore further input.
@@ -539,8 +540,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleTempoDown()
 		}
 
-	case tea.InterruptMsg:
-		// SIGINT received as an OS signal (non-TTY input); mirror ctrl+c.
+	case sigIntMsg:
+		// SIGINT received as an OS signal (non-TTY input), rewritten from
+		// tea.InterruptMsg by FilterSignals; mirror ctrl+c.
 		if m.confirm != confirmNone {
 			m.confirm = confirmNone
 			m.confirmQ = true
@@ -765,7 +767,13 @@ func (m *Model) helpBar() string {
 	return cache.bar
 }
 
-func (m Model) View() string {
+func (m Model) View() tea.View {
+	v := tea.NewView(m.viewContent())
+	v.AltScreen = true
+	return v
+}
+
+func (m Model) viewContent() string {
 	if m.quitting {
 		return m.styles.Help.Render(m.shutdownMessage())
 	}
@@ -1029,8 +1037,8 @@ func newSpanStyles(theme ui.Theme) []lipgloss.Style {
 	return styles
 }
 
-func spanStyle(color lipgloss.Color) lipgloss.Style {
-	return lipgloss.NewStyle().Reverse(true).Foreground(color)
+func spanStyle(fg color.Color) lipgloss.Style {
+	return lipgloss.NewStyle().Reverse(true).Foreground(fg)
 }
 
 func (m Model) handleEvaluate(mode evalMode) (tea.Model, tea.Cmd) {

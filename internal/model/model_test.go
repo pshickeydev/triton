@@ -6,9 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/pshickeydev/triton/internal/cursor"
 	"github.com/pshickeydev/triton/internal/doc"
@@ -26,7 +27,7 @@ func newTestModel() Model {
 func TestCtrlC_ShowsQuitWarning(t *testing.T) {
 	m := newTestModel()
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	updated, cmd := m.Update(ctrlMsg('c'))
 	if cmd != nil {
 		t.Errorf("first ctrl+c should not produce a command (no quit)")
 	}
@@ -43,7 +44,7 @@ func TestCtrlC_SecondPressQuits(t *testing.T) {
 	m := newTestModel()
 	m.confirmQ = true
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	updated, cmd := m.Update(ctrlMsg('c'))
 	um := updated.(Model)
 	if !um.quitting {
 		t.Errorf("second ctrl+c should set quitting")
@@ -59,7 +60,7 @@ func TestCtrlC_SecondPressQuits(t *testing.T) {
 func TestInterrupt_MirrorsCtrlC(t *testing.T) {
 	m := newTestModel()
 
-	updated, cmd := m.Update(tea.InterruptMsg{})
+	updated, cmd := m.Update(sigIntMsg{})
 	um := updated.(Model)
 	if !um.confirmQ || um.quitting {
 		t.Errorf("first interrupt should show warning, got confirmQ=%v quitting=%v", um.confirmQ, um.quitting)
@@ -68,7 +69,7 @@ func TestInterrupt_MirrorsCtrlC(t *testing.T) {
 		t.Errorf("first interrupt should not quit")
 	}
 
-	updated, cmd = um.Update(tea.InterruptMsg{})
+	updated, cmd = um.Update(sigIntMsg{})
 	um = updated.(Model)
 	if !um.quitting {
 		t.Errorf("second interrupt should quit")
@@ -85,7 +86,7 @@ func TestEsc_DismissesQuitWarning(t *testing.T) {
 	m := newTestModel()
 	m.confirmQ = true
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, cmd := m.Update(keyMsg(tea.KeyEsc))
 	um := updated.(Model)
 	if um.confirmQ {
 		t.Errorf("esc should clear confirmQ")
@@ -102,7 +103,7 @@ func TestToggleMute_UnknownStream(t *testing.T) {
 	m := newTestModel()
 	m.tracker = status.NewTracker(4)
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyF5})
+	updated, _ := m.Update(keyMsg(tea.KeyF5))
 	um := updated.(Model)
 	if _, ok := um.tracker.Streams()[5]; ok {
 		t.Errorf("stream 5 should not appear in the tracker")
@@ -113,7 +114,7 @@ func TestQuitWarning_BlocksOtherKeys(t *testing.T) {
 	m := newTestModel()
 	m.confirmQ = true
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	updated, cmd := m.Update(textMsg("j"))
 	um := updated.(Model)
 	if !um.confirmQ {
 		t.Errorf("unrelated key should not dismiss the warning")
@@ -133,7 +134,7 @@ func TestQuitWarning_ViewContainsWarning(t *testing.T) {
 	m.height = 30
 	m.layout.SetSize(100, 30-2)
 
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, quitWarningText) {
 		t.Errorf("view should contain quit warning text %q", quitWarningText)
 	}
@@ -155,7 +156,7 @@ func TestStartup_EditorAcceptsTypingWithoutTab(t *testing.T) {
 		t.Fatalf("textarea should start focused so typing works immediately")
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	updated, _ = m.Update(textMsg("d"))
 	um := updated.(Model)
 	if um.textarea.Value() != "d" {
 		t.Errorf("typing at startup should reach the editor, got %q", um.textarea.Value())
@@ -174,7 +175,7 @@ func TestTab_SmallLayoutTogglesView(t *testing.T) {
 		t.Fatalf("initial view/focus = %v/%v, want editor", m.view, m.focus)
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ = m.Update(keyMsg(tea.KeyTab))
 	m = updated.(Model)
 	if m.view != viewStatusConsole {
 		t.Errorf("tab in small mode should switch to status+console view, got %v", m.view)
@@ -183,7 +184,7 @@ func TestTab_SmallLayoutTogglesView(t *testing.T) {
 		t.Errorf("tab in small mode should focus console, got %v", m.focus)
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ = m.Update(keyMsg(tea.KeyTab))
 	m = updated.(Model)
 	if m.view != viewEditor || m.focus != focusEditor {
 		t.Errorf("second tab should return to editor, got view=%v focus=%v", m.view, m.focus)
@@ -199,7 +200,7 @@ func TestTab_LargeLayoutCyclesPanes(t *testing.T) {
 		t.Fatalf("expected ModeLarge at 120x40, got %v", m.layout.Mode())
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ = m.Update(keyMsg(tea.KeyTab))
 	m = updated.(Model)
 	if m.focus != focusStatus {
 		t.Errorf("tab in large mode should move focus to status, got %v", m.focus)
@@ -215,7 +216,7 @@ func TestView_SmallLayoutShowsOneView(t *testing.T) {
 	m = updated.(Model)
 	m.textarea.SetValue("d1 $ sound \"bd\"")
 
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "d1 $ sound") {
 		t.Errorf("editor view should contain editor content")
 	}
@@ -229,7 +230,7 @@ func TestView_TooSmallShowsNotice(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 50, Height: 15})
 	m = updated.(Model)
 
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "Terminal too small") {
 		t.Errorf("too-small terminal should show notice, got %q", view)
 	}
@@ -245,7 +246,7 @@ func TestQuitting_ViewShowsShutdownMessage(t *testing.T) {
 	m := newTestModel()
 	m.quitting = true
 
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, shutdownText) {
 		t.Errorf("quitting view should show shutdown message %q, got %q", shutdownText, view)
 	}
@@ -256,7 +257,7 @@ func TestQuitting_ViewShowsShutdownMessage(t *testing.T) {
 	m2 := newTestModel()
 	m2.sclang = true
 	m2.quitting = true
-	view = m2.View()
+	view = m2.View().Content
 	if !strings.Contains(view, shutdownTextSC) {
 		t.Errorf("with sclang managed, quitting view should show %q, got %q", shutdownTextSC, view)
 	}
@@ -268,7 +269,7 @@ func TestQuitWarning_OverlaysTooSmallNotice(t *testing.T) {
 	m = updated.(Model)
 	m.confirmQ = true
 
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, quitWarningText) {
 		t.Errorf("quit warning should display over the too-small notice, got %q", view)
 	}
@@ -279,7 +280,7 @@ func TestView_SmallLayoutHelpMentionsSwitchView(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 26})
 	m = updated.(Model)
 
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "Tab: switch view") {
 		t.Errorf("small layout help should say 'Tab: switch view'")
 	}
@@ -291,13 +292,13 @@ func TestSmallLayout_HiddenEditorDoesNotConsumeKeys(t *testing.T) {
 	m = updated.(Model)
 	m.textarea.SetValue("d1")
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ = m.Update(keyMsg(tea.KeyTab))
 	m = updated.(Model)
 	if m.view != viewStatusConsole {
 		t.Fatalf("expected status view after tab")
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	updated, _ = m.Update(textMsg("x"))
 	m = updated.(Model)
 	if m.textarea.Value() != "d1" {
 		t.Errorf("hidden editor should not receive typed input, got %q", m.textarea.Value())
@@ -308,7 +309,7 @@ func TestResize_SmallToLargeKeepsState(t *testing.T) {
 	m := newTestModel()
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 26})
 	m = updated.(Model)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ = m.Update(keyMsg(tea.KeyTab))
 	m = updated.(Model)
 
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 130, Height: 40})
@@ -319,7 +320,7 @@ func TestResize_SmallToLargeKeepsState(t *testing.T) {
 	if m.focus != focusConsole {
 		t.Errorf("focus should stay on console after resize, got %v", m.focus)
 	}
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "streams:") {
 		t.Errorf("large layout should render status panel, got missing")
 	}
@@ -628,8 +629,17 @@ func newDispatchModel() Model {
 	return updated.(Model)
 }
 
-func altKey(r rune) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: true}
+func keyMsg(code rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: code} }
+
+func ctrlMsg(r rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: r, Mod: tea.ModCtrl} }
+
+func textMsg(s string) tea.KeyPressMsg {
+	r, _ := utf8.DecodeRuneInString(s)
+	return tea.KeyPressMsg{Code: r, Text: s}
+}
+
+func altKey(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r, Mod: tea.ModAlt}
 }
 
 func TestMuteAllKey(t *testing.T) {
@@ -647,7 +657,7 @@ func TestMuteAllKey(t *testing.T) {
 func TestCtrlMInsertsNewlineNotMuteAll(t *testing.T) {
 	m := newDispatchModel()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlM})
+	updated, _ := m.Update(ctrlMsg('m'))
 	um := updated.(Model)
 	if um.textarea.Value() != "\n" {
 		t.Errorf("ctrl+m (enter) should insert a newline, got %q", um.textarea.Value())
@@ -664,7 +674,7 @@ func TestUnmuteAllKey(t *testing.T) {
 	m.tracker.SetMuted(1)
 	m.tracker.SetMuted(3)
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	updated, _ := m.Update(ctrlMsg('u'))
 	um := updated.(Model)
 	for n, state := range um.tracker.Streams() {
 		if state == status.StreamMuted {
@@ -677,7 +687,7 @@ func TestHushKey(t *testing.T) {
 	m := newDispatchModel()
 	m.tracker.SetPlaying(1, `d1 $ sound "bd"`)
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlBackslash})
+	updated, _ := m.Update(ctrlMsg('\\'))
 	um := updated.(Model)
 	for n, state := range um.tracker.Streams() {
 		if state != status.StreamIdle {
@@ -692,13 +702,13 @@ func TestHushKey(t *testing.T) {
 func TestFKeyTogglesMute(t *testing.T) {
 	m := newDispatchModel()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyF1})
+	updated, _ := m.Update(keyMsg(tea.KeyF1))
 	um := updated.(Model)
 	if um.tracker.Streams()[1] != status.StreamMuted {
 		t.Errorf("f1 should mute d1, got %d", um.tracker.Streams()[1])
 	}
 
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyF1})
+	updated, _ = um.Update(keyMsg(tea.KeyF1))
 	um = updated.(Model)
 	if um.tracker.Streams()[1] != status.StreamIdle {
 		t.Errorf("second f1 should unmute d1 to idle (nothing playing), got %d", um.tracker.Streams()[1])
@@ -781,14 +791,14 @@ func withDoc(t *testing.T, content string) (Model, *doc.Doc) {
 }
 
 func typePrompt(m Model, text string) Model {
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text)})
+	updated, _ := m.Update(textMsg(text))
 	return updated.(Model)
 }
 
 func TestCtrlO_OpensOpenPrompt(t *testing.T) {
 	m := newTestModel()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(ctrlMsg('o'))
 	um := updated.(Model)
 	if !um.promptOn {
 		t.Fatal("ctrl+o should open the filename prompt")
@@ -804,7 +814,7 @@ func TestCtrlO_OpensOpenPrompt(t *testing.T) {
 func TestCtrlS_NoPath_OpensSaveAsPrompt(t *testing.T) {
 	m := newTestModel()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	updated, _ := m.Update(ctrlMsg('s'))
 	um := updated.(Model)
 	if !um.promptOn {
 		t.Fatal("ctrl+s without a bound file should open the prompt")
@@ -820,7 +830,7 @@ func TestCtrlS_NoPath_OpensSaveAsPrompt(t *testing.T) {
 func TestPrompt_TypingGoesToInputNotEditor(t *testing.T) {
 	m := newTestModel()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(ctrlMsg('o'))
 	um := typePrompt(updated.(Model), "d1 $ sound")
 
 	if got := um.textarea.Value(); got != "" {
@@ -834,9 +844,9 @@ func TestPrompt_TypingGoesToInputNotEditor(t *testing.T) {
 func TestPrompt_EscCancels(t *testing.T) {
 	m := newTestModel()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(ctrlMsg('o'))
 	um := typePrompt(updated.(Model), "set.tidal")
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, _ = um.Update(keyMsg(tea.KeyEsc))
 	um = updated.(Model)
 
 	if um.promptOn {
@@ -852,9 +862,9 @@ func TestPrompt_EnterLoadsFile(t *testing.T) {
 	path := writeTidalFile(t, t.TempDir(), content)
 
 	m := newTestModel()
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(ctrlMsg('o'))
 	um := typePrompt(updated.(Model), path)
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = um.Update(keyMsg(tea.KeyEnter))
 	um = updated.(Model)
 
 	if got := um.textarea.Value(); got != content {
@@ -872,9 +882,9 @@ func TestLoad_ControlCharactersDoNotDirtyBuffer(t *testing.T) {
 	path := writeTidalFile(t, t.TempDir(), "d1 $ sound \"bd\"\x0c\n")
 
 	m := newTestModel()
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(ctrlMsg('o'))
 	um := typePrompt(updated.(Model), path)
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = um.Update(keyMsg(tea.KeyEnter))
 	um = updated.(Model)
 
 	if um.dirty() {
@@ -885,9 +895,9 @@ func TestLoad_ControlCharactersDoNotDirtyBuffer(t *testing.T) {
 func TestPrompt_EnterMissingFileKeepsEditor(t *testing.T) {
 	m := newTestModel()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(ctrlMsg('o'))
 	um := typePrompt(updated.(Model), filepath.Join(t.TempDir(), "missing.tidal"))
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = um.Update(keyMsg(tea.KeyEnter))
 	um = updated.(Model)
 
 	if got := um.textarea.Value(); got != "" {
@@ -908,9 +918,9 @@ func TestPrompt_EnterMissingFileKeepsEditor(t *testing.T) {
 func TestPrompt_EmptyPathSubmitKeepsPromptOpen(t *testing.T) {
 	m := newTestModel()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(ctrlMsg('o'))
 	um := updated.(Model)
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = um.Update(keyMsg(tea.KeyEnter))
 	um = updated.(Model)
 
 	if !um.promptOn {
@@ -932,7 +942,7 @@ func TestCtrlS_SavesToBoundFile(t *testing.T) {
 	WithDocument(d)(&m)
 
 	m.textarea.SetValue("d1 $ sound \"hh\"\n")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	updated, _ := m.Update(ctrlMsg('s'))
 	um := updated.(Model)
 
 	if um.promptOn {
@@ -953,9 +963,9 @@ func TestCtrlS_SaveAs_WritesPrefilledName(t *testing.T) {
 	m := newTestModel()
 	m.textarea.SetValue("d1 $ sound \"bd\"\n")
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	updated, _ := m.Update(ctrlMsg('s'))
 	um := updated.(Model)
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = um.Update(keyMsg(tea.KeyEnter))
 	um = updated.(Model)
 
 	path := filepath.Join(dir, untitledFile)
@@ -984,10 +994,10 @@ func overwriteWarningModel(t *testing.T) (Model, string) {
 
 	m := newTestModel()
 	m.textarea.SetValue("new\n")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	updated, _ := m.Update(ctrlMsg('s'))
 	um := updated.(Model)
 	um.promptInput.SetValue(path)
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = um.Update(keyMsg(tea.KeyEnter))
 	um = updated.(Model)
 	if um.confirm != confirmOverwrite {
 		t.Fatal("precondition: save-as to an existing file should ask before overwriting")
@@ -1002,7 +1012,7 @@ func TestCtrlS_SaveAs_ExistingFileAsksToOverwrite(t *testing.T) {
 		t.Fatalf("file written before confirmation: %q", got)
 	}
 
-	updated, _ := um.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := um.Update(keyMsg(tea.KeyEnter))
 	um = updated.(Model)
 	if um.confirm != confirmNone {
 		t.Error("confirming should close the overwrite warning")
@@ -1018,7 +1028,7 @@ func TestCtrlS_SaveAs_ExistingFileAsksToOverwrite(t *testing.T) {
 func TestCtrlS_SaveAs_OverwriteCancelReturnsToPrompt(t *testing.T) {
 	um, path := overwriteWarningModel(t)
 
-	updated, _ := um.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, _ := um.Update(keyMsg(tea.KeyEsc))
 	um = updated.(Model)
 	if um.confirm != confirmNone {
 		t.Error("esc should close the overwrite warning")
@@ -1037,7 +1047,7 @@ func TestCtrlS_SaveAs_OverwriteCancelReturnsToPrompt(t *testing.T) {
 func TestCtrlS_SaveAs_OverwriteCtrlCAsksToQuit(t *testing.T) {
 	um, _ := overwriteWarningModel(t)
 
-	updated, _ := um.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	updated, _ := um.Update(ctrlMsg('c'))
 	um = updated.(Model)
 	if um.confirm != confirmNone {
 		t.Error("ctrl+c should close the overwrite warning")
@@ -1050,7 +1060,7 @@ func TestCtrlS_SaveAs_OverwriteCtrlCAsksToQuit(t *testing.T) {
 func TestInterrupt_DuringOverwriteCancelsWarning(t *testing.T) {
 	um, _ := overwriteWarningModel(t)
 
-	updated, _ := um.Update(tea.InterruptMsg{})
+	updated, _ := um.Update(sigIntMsg{})
 	um = updated.(Model)
 	if um.confirm != confirmNone {
 		t.Error("SIGINT should close the overwrite warning")
@@ -1063,7 +1073,7 @@ func TestInterrupt_DuringOverwriteCancelsWarning(t *testing.T) {
 func TestOverwriteWarning_ShownInView(t *testing.T) {
 	um, _ := overwriteWarningModel(t)
 
-	view := um.View()
+	view := um.View().Content
 	if !strings.Contains(view, "File exists") {
 		t.Error("warning overlay should say the file exists")
 	}
@@ -1078,10 +1088,10 @@ func TestCtrlO_DirtyBufferAsksBeforeDiscarding(t *testing.T) {
 	m := newTestModel()
 	m.textarea.SetValue("d1 $ sound \"bd\"\n")
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(ctrlMsg('o'))
 	um := updated.(Model)
 	um.promptInput.SetValue(path)
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = um.Update(keyMsg(tea.KeyEnter))
 	um = updated.(Model)
 
 	if um.confirm != confirmDiscard {
@@ -1090,7 +1100,7 @@ func TestCtrlO_DirtyBufferAsksBeforeDiscarding(t *testing.T) {
 	if got := um.textarea.Value(); got != "d1 $ sound \"bd\"\n" {
 		t.Errorf("file loaded before confirmation, editor = %q", got)
 	}
-	view := um.View()
+	view := um.View().Content
 	if !strings.Contains(view, "Unsaved changes will be lost") {
 		t.Error("warning overlay should mention the lost edits")
 	}
@@ -1098,7 +1108,7 @@ func TestCtrlO_DirtyBufferAsksBeforeDiscarding(t *testing.T) {
 		t.Error("help bar should show the open confirmation keys")
 	}
 
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = um.Update(keyMsg(tea.KeyEnter))
 	um = updated.(Model)
 	if um.confirm != confirmNone {
 		t.Error("confirming should close the discard warning")
@@ -1113,13 +1123,13 @@ func TestCtrlO_DiscardCancelReturnsToPrompt(t *testing.T) {
 	m := newTestModel()
 	m.textarea.SetValue("d1 $ sound \"bd\"\n")
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(ctrlMsg('o'))
 	um := updated.(Model)
 	um.promptInput.SetValue(path)
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = um.Update(keyMsg(tea.KeyEnter))
 	um = updated.(Model)
 
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, _ = um.Update(keyMsg(tea.KeyEsc))
 	um = updated.(Model)
 	if um.confirm != confirmNone {
 		t.Error("esc should close the discard warning")
@@ -1153,7 +1163,7 @@ func TestCtrlS_SaveFailureReportsErrorAndKeepsBinding(t *testing.T) {
 	}
 
 	m.textarea.SetValue("new\n")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	updated, _ := m.Update(ctrlMsg('s'))
 	um := updated.(Model)
 
 	if um.doc.Path() != path {
@@ -1171,9 +1181,9 @@ func TestCtrlS_SaveFailureReportsErrorAndKeepsBinding(t *testing.T) {
 func TestPrompt_CtrlCQuitsAfterCancel(t *testing.T) {
 	m := newTestModel()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(ctrlMsg('o'))
 	um := updated.(Model)
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	updated, _ = um.Update(ctrlMsg('c'))
 	um = updated.(Model)
 
 	if um.promptOn {
@@ -1188,13 +1198,13 @@ func TestQuitWarning_MentionsUnsavedChanges(t *testing.T) {
 	m := newTestModel()
 	m.confirmQ = true
 
-	view := m.View()
+	view := m.View().Content
 	if strings.Contains(view, "Unsaved changes") {
 		t.Error("clean buffer should not warn about unsaved changes")
 	}
 
 	m.textarea.SetValue("d1 $ sound \"bd\"\n")
-	view = m.View()
+	view = m.View().Content
 	if !strings.Contains(view, "Unsaved changes") {
 		t.Error("dirty buffer should warn about unsaved changes in the quit notice")
 	}
@@ -1203,9 +1213,9 @@ func TestQuitWarning_MentionsUnsavedChanges(t *testing.T) {
 func TestInterrupt_DuringPromptCancelsPrompt(t *testing.T) {
 	m := newTestModel()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(ctrlMsg('o'))
 	um := updated.(Model)
-	updated, _ = um.Update(tea.InterruptMsg{})
+	updated, _ = um.Update(sigIntMsg{})
 	um = updated.(Model)
 
 	if um.promptOn {
@@ -1219,13 +1229,13 @@ func TestInterrupt_DuringPromptCancelsPrompt(t *testing.T) {
 func TestHelpBar_ShowsFileAndDirtyMark(t *testing.T) {
 	m, _ := withDoc(t, "d1 $ sound \"bd\"\n")
 
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "set.tidal |") {
 		t.Error("help bar should show the bound file name")
 	}
 
 	m.textarea.SetValue("d1 $ sound \"hh\"\n")
-	view = m.View()
+	view = m.View().Content
 	if !strings.Contains(view, "set.tidal*") {
 		t.Error("help bar should mark unsaved changes with *")
 	}
@@ -1234,12 +1244,12 @@ func TestHelpBar_ShowsFileAndDirtyMark(t *testing.T) {
 func TestHelpBar_UntitledDirtyShowsLabel(t *testing.T) {
 	m := newTestModel()
 
-	if strings.Contains(m.View(), "untitled") {
+	if strings.Contains(m.View().Content, "untitled") {
 		t.Error("clean untitled buffer should show no file label")
 	}
 
 	m.textarea.SetValue("d1 $ sound \"bd\"\n")
-	if !strings.Contains(m.View(), "untitled*") {
+	if !strings.Contains(m.View().Content, "untitled*") {
 		t.Error("dirty untitled buffer should show a marked file label")
 	}
 }
@@ -1247,9 +1257,9 @@ func TestHelpBar_UntitledDirtyShowsLabel(t *testing.T) {
 func TestPrompt_HelpBarShowsPromptKeys(t *testing.T) {
 	m := newTestModel()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(ctrlMsg('o'))
 	um := updated.(Model)
-	if !strings.Contains(um.View(), "Esc: cancel") {
+	if !strings.Contains(um.View().Content, "Esc: cancel") {
 		t.Error("help bar should show prompt keys while the prompt is open")
 	}
 }
@@ -1263,9 +1273,9 @@ func TestLoad_FlagsPlayingPatternsEdited(t *testing.T) {
 	}
 
 	path := writeTidalFile(t, t.TempDir(), "d1 $ sound \"hh\"\n")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(ctrlMsg('o'))
 	um := typePrompt(updated.(Model), path)
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = um.Update(keyMsg(tea.KeyEnter))
 	um = updated.(Model)
 
 	if !um.tracker.Edited()[1] {
@@ -1279,9 +1289,9 @@ func TestLoad_ClearsMarkerForRemovedPlayingPattern(t *testing.T) {
 	m.refreshEdited()
 
 	path := writeTidalFile(t, t.TempDir(), "d2 $ sound \"hh\"\n")
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	updated, _ := m.Update(ctrlMsg('o'))
 	um := typePrompt(updated.(Model), path)
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = um.Update(keyMsg(tea.KeyEnter))
 	um = updated.(Model)
 
 	if um.tracker.Edited()[1] {
@@ -1321,7 +1331,7 @@ func TestToggleMute_RevertsOnSendFailure(t *testing.T) {
 	m := newDispatchModel()
 	m.oscClient = errTransport{}
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyF1})
+	updated, _ := m.Update(keyMsg(tea.KeyF1))
 	um := updated.(Model)
 	if um.tracker.Streams()[1] != status.StreamIdle {
 		t.Errorf("failed mute should restore the previous state, got %d", um.tracker.Streams()[1])
@@ -1355,7 +1365,7 @@ func TestRestartGhci_RunsAsync(t *testing.T) {
 	m := newTestModel()
 	m.ghciCfg = GhciConfig{Executable: "nonexistent-ghci-binary"}
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	updated, cmd := m.Update(ctrlMsg('r'))
 	um := updated.(Model)
 	if !um.restarting {
 		t.Errorf("restart should be in flight after ctrl+r")
@@ -1387,7 +1397,7 @@ func TestRestartGhci_IgnoredWhileRestarting(t *testing.T) {
 	m := newTestModel()
 	m.restarting = true
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	updated, cmd := m.Update(ctrlMsg('r'))
 	um := updated.(Model)
 	if cmd != nil {
 		t.Errorf("a second ctrl+r should not start another restart")
@@ -1402,7 +1412,7 @@ func TestQuit_DuringRestartWaitsForCompletion(t *testing.T) {
 	m.restarting = true
 	m.confirmQ = true
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	updated, cmd := m.Update(ctrlMsg('c'))
 	um := updated.(Model)
 	if !um.quitting {
 		t.Errorf("second ctrl+c should quit")
@@ -1425,7 +1435,7 @@ func TestQuitting_IgnoresKeys(t *testing.T) {
 	m.quitting = true
 	m.restarting = true
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, cmd := m.Update(keyMsg(tea.KeyEsc))
 	um := updated.(Model)
 	if cmd != nil {
 		t.Errorf("keys should be ignored while quitting")
@@ -1467,17 +1477,17 @@ func TestDocumentTextTracksBuffer(t *testing.T) {
 	m := newTestModel()
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = updated.(Model)
-	keys := []tea.KeyMsg{
-		{Type: tea.KeyRunes, Runes: []rune("d")},
-		{Type: tea.KeyRunes, Runes: []rune("1")},
-		{Type: tea.KeyEnter},
-		{Type: tea.KeyDown},
-		{Type: tea.KeyRunes, Runes: []rune("$ sound \"bd sn\"")},
-		{Type: tea.KeyBackspace},
-		{Type: tea.KeyLeft},
-		{Type: tea.KeyRunes, Runes: []rune("x")},
-		{Type: tea.KeyCtrlK},
-		{Type: tea.KeyCtrlW},
+	keys := []tea.KeyPressMsg{
+		textMsg("d"),
+		textMsg("1"),
+		keyMsg(tea.KeyEnter),
+		keyMsg(tea.KeyDown),
+		textMsg("$ sound \"bd sn\""),
+		keyMsg(tea.KeyBackspace),
+		keyMsg(tea.KeyLeft),
+		textMsg("x"),
+		ctrlMsg('k'),
+		ctrlMsg('w'),
 	}
 	for _, msg := range keys {
 		updated, _ = m.Update(msg)
@@ -1509,7 +1519,7 @@ func TestDirtyMarkerFollowsEdits(t *testing.T) {
 		t.Fatal("a freshly loaded document should not be dirty")
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("!")})
+	updated, _ = m.Update(textMsg("!"))
 	m = updated.(Model)
 	if !m.dirty() {
 		t.Fatal("typing should mark the document dirty")

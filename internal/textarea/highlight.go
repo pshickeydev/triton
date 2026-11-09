@@ -3,7 +3,7 @@ package textarea
 import (
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // Highlight is a buffer range rendered with a custom style, used for the
@@ -26,7 +26,7 @@ func (m *Model) SetHighlights(highlights []Highlight) {
 
 // YOffset returns the vertical scroll position of the viewport in rows.
 func (m Model) YOffset() int {
-	return m.viewport.YOffset
+	return m.viewport.YOffset()
 }
 
 // colRange is a 0-based rune index range [start, end) within a logical

@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/pshickeydev/triton/internal/boot"
 	"github.com/pshickeydev/triton/internal/config"
@@ -188,7 +188,7 @@ func run() error {
 
 	m := model.NewModel(theme, ghciProc, oscClient, tracker, panel, console, ghciCfg, opts...)
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithFilter(model.FilterSignals))
 	finalModel, err := p.Run()
 	if err != nil {
 		if final, ok := finalModel.(model.Model); ok {

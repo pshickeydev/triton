@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/pshickeydev/triton/internal/cursor"
 	"github.com/pshickeydev/triton/internal/doc"
@@ -43,7 +43,7 @@ func TestReviewRejectsEvaluationDuringRestart(t *testing.T) {
 	m.restarting = true
 	m.textarea.SetValue(`d1 $ sound "bd"`)
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	updated, _ := m.Update(ctrlMsg('j'))
 	updatedModel := updated.(Model)
 	if len(evaluator.evaluations) != 0 {
 		t.Fatalf("evaluation reached retiring process: %q", evaluator.evaluations)
@@ -60,7 +60,7 @@ func TestReviewFailedGlobalTransportPreservesState(t *testing.T) {
 		m := newDispatchModel()
 		m.oscClient = errTransport{}
 		m.tracker.SetPlaying(1, `d1 $ sound "bd"`)
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlBackslash})
+		updated, _ := m.Update(ctrlMsg('\\'))
 		if _, ok := updated.(Model).tracker.Playing()[1]; !ok {
 			t.Fatal("failed hush erased playing state")
 		}
@@ -79,7 +79,7 @@ func TestReviewFailedGlobalTransportPreservesState(t *testing.T) {
 		m.oscClient = errTransport{}
 		m.tracker.SetPlaying(1, `d1 $ sound "bd"`)
 		m.tracker.SetMuted(1)
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+		updated, _ := m.Update(ctrlMsg('u'))
 		if got := updated.(Model).tracker.Streams()[1]; got != status.StreamMuted {
 			t.Fatalf("failed unmute-all changed stream state to %d", got)
 		}
@@ -155,7 +155,7 @@ func TestReviewEvaluateRunsAsCommand(t *testing.T) {
 	m.ghciProc = evaluator
 	m.textarea.SetValue(`d1 $ sound "bd"`)
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	updated, cmd := m.Update(ctrlMsg('j'))
 	um := updated.(Model)
 	if cmd == nil {
 		t.Fatal("ctrl+j should return an evaluation command")
@@ -191,7 +191,7 @@ func TestReviewEvaluateFailureLoggedNotPlaying(t *testing.T) {
 	m.ghciProc = evaluator
 	m.textarea.SetValue(`d1 $ sound "bd"`)
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	updated, cmd := m.Update(ctrlMsg('j'))
 	um := updated.(Model)
 	msg := cmd().(evalDoneMsg)
 	msg.err = errors.New("write timeout")
@@ -224,9 +224,9 @@ func TestReviewTransportBlockedDuringRestart(t *testing.T) {
 	m.restarting = true
 	m.tracker.SetPlaying(1, `d1 $ sound "bd"`)
 
-	for _, msg := range []tea.Msg{tea.KeyMsg{Type: tea.KeyCtrlBackslash}, altKey('m'),
-		tea.KeyMsg{Type: tea.KeyCtrlU}, tea.KeyMsg{Type: tea.KeyF1}, altKey('1'),
-		altKey(']'), altKey('['), tea.KeyMsg{Type: tea.KeyCtrlR}} {
+	for _, msg := range []tea.Msg{ctrlMsg('\\'), altKey('m'),
+		ctrlMsg('u'), keyMsg(tea.KeyF1), altKey('1'),
+		altKey(']'), altKey('['), ctrlMsg('r')} {
 		updated, _ := m.Update(msg)
 		um := updated.(Model)
 		if got := um.tracker.Streams()[1]; got != status.StreamActive {
@@ -238,7 +238,7 @@ func TestReviewTransportBlockedDuringRestart(t *testing.T) {
 	}
 
 	// Editing and saving stay available during a restart.
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	updated, _ := m.Update(textMsg("x"))
 	if got := updated.(Model).textarea.Value(); got != `x` {
 		t.Fatalf("editing should keep working during a restart, buffer = %q", got)
 	}
@@ -254,7 +254,7 @@ func TestReviewRestartAppliesStartupTempo(t *testing.T) {
 	m.ghciCfg = GhciConfig{Tempo: 0.9}
 	m.spawnGhci = func(GhciConfig) (Evaluator, error) { return evaluator, nil }
 
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	updated, cmd := m.Update(ctrlMsg('r'))
 	um := updated.(Model)
 	msg := cmd().(ghciRestartedMsg)
 	if msg.err != nil {
@@ -339,7 +339,7 @@ func TestReviewMuteSoloIndependent(t *testing.T) {
 	m := newDispatchModel()
 
 	updated, _ := m.Update(altKey('1'))
-	updated, _ = updated.(Model).Update(tea.KeyMsg{Type: tea.KeyF1})
+	updated, _ = updated.(Model).Update(keyMsg(tea.KeyF1))
 	um := updated.(Model)
 	if got := um.tracker.Streams()[1]; got != status.StreamSoloed {
 		t.Fatalf("muting a soloed stream should keep solo precedence, got %d", got)
@@ -368,7 +368,7 @@ func TestReviewMuteAllKeepsSolo(t *testing.T) {
 		t.Fatalf("muteAll should mute d2, got %d", got)
 	}
 
-	updated, _ = um.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	updated, _ = um.Update(ctrlMsg('u'))
 	um = updated.(Model)
 	if got := um.tracker.Streams()[1]; got != status.StreamSoloed {
 		t.Fatalf("unmuteAll should leave the soloed stream alone, got %d", got)

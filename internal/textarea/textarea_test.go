@@ -4,13 +4,21 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/rivo/uniseg"
 )
 
-func keyMsg(kind tea.KeyType) tea.KeyMsg {
-	return tea.KeyMsg{Type: kind}
+func keyMsg(code rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: code} }
+
+func ctrlMsg(r rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: r, Mod: tea.ModCtrl} }
+
+func altMsg(code rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: code, Mod: tea.ModAlt} }
+
+func textMsg(s string) tea.KeyPressMsg {
+	r, _ := utf8.DecodeRuneInString(s)
+	return tea.KeyPressMsg{Code: r, Text: s}
 }
 
 func areaWithLines(t *testing.T, text string, width, height int) Model {
@@ -41,15 +49,15 @@ func step(m Model, msg tea.Msg) Model {
 // editor would re-segment the buffer on every keystroke that changed nothing.
 func TestRevisionTracksEdits(t *testing.T) {
 	doc := "d1 $ sound \"bd sn\"\nd2 $ sound \"hh*4\"\n"
-	edits := []tea.KeyMsg{
-		{Type: tea.KeyRunes, Runes: []rune("x")},
+	edits := []tea.KeyPressMsg{
+		textMsg("x"),
 		keyMsg(tea.KeyEnter),
 		keyMsg(tea.KeyBackspace),
 		keyMsg(tea.KeyDelete),
-		keyMsg(tea.KeyCtrlK),
-		keyMsg(tea.KeyCtrlU),
-		keyMsg(tea.KeyCtrlW),
-		keyMsg(tea.KeyCtrlT),
+		ctrlMsg('k'),
+		ctrlMsg('u'),
+		ctrlMsg('w'),
+		ctrlMsg('t'),
 	}
 	for _, msg := range edits {
 		m := areaWithLines(t, doc, 40, 4)
@@ -59,19 +67,19 @@ func TestRevisionTracksEdits(t *testing.T) {
 		}
 	}
 
-	moves := []tea.KeyMsg{
+	moves := []tea.KeyPressMsg{
 		keyMsg(tea.KeyLeft),
 		keyMsg(tea.KeyRight),
 		keyMsg(tea.KeyUp),
 		keyMsg(tea.KeyDown),
 		keyMsg(tea.KeyHome),
 		keyMsg(tea.KeyEnd),
-		keyMsg(tea.KeyCtrlA),
-		keyMsg(tea.KeyCtrlE),
-		keyMsg(tea.KeyCtrlHome),
-		keyMsg(tea.KeyCtrlEnd),
-		{Type: tea.KeyLeft, Alt: true},
-		{Type: tea.KeyRight, Alt: true},
+		ctrlMsg('a'),
+		ctrlMsg('e'),
+		tea.KeyPressMsg{Code: tea.KeyHome, Mod: tea.ModCtrl},
+		tea.KeyPressMsg{Code: tea.KeyEnd, Mod: tea.ModCtrl},
+		altMsg(tea.KeyLeft),
+		altMsg(tea.KeyRight),
 	}
 	for _, msg := range moves {
 		m := areaWithLines(t, doc, 40, 4)
@@ -88,31 +96,31 @@ func TestRevisionTracksEdits(t *testing.T) {
 // changed, so every mutating key binding must advance it and no others.
 func TestRevisionMatchesContentChange(t *testing.T) {
 	fixture := "d1 $ sound \"bd sn\" # gain 0.9\n\n-- comment\n\nd2 $ s \"hh*4\" ~ bass\n"
-	bindings := []tea.KeyMsg{
-		{Type: tea.KeyRunes, Runes: []rune("q")},
-		{Type: tea.KeyRunes, Runes: []rune(" ")},
+	bindings := []tea.KeyPressMsg{
+		textMsg("q"),
+		textMsg(" "),
 		keyMsg(tea.KeyEnter),
 		keyMsg(tea.KeyTab),
 		keyMsg(tea.KeyBackspace),
 		keyMsg(tea.KeyDelete),
-		keyMsg(tea.KeyCtrlK),
-		keyMsg(tea.KeyCtrlU),
-		keyMsg(tea.KeyCtrlW),
-		{Type: tea.KeyRunes, Runes: []rune("d"), Alt: true},
-		keyMsg(tea.KeyCtrlT),
-		{Type: tea.KeyRunes, Runes: []rune("u"), Alt: true},
-		{Type: tea.KeyRunes, Runes: []rune("l"), Alt: true},
-		{Type: tea.KeyRunes, Runes: []rune("c"), Alt: true},
-		keyMsg(tea.KeyCtrlA),
-		keyMsg(tea.KeyCtrlE),
-		keyMsg(tea.KeyCtrlHome),
-		keyMsg(tea.KeyCtrlEnd),
+		ctrlMsg('k'),
+		ctrlMsg('u'),
+		ctrlMsg('w'),
+		altMsg('d'),
+		ctrlMsg('t'),
+		altMsg('u'),
+		altMsg('l'),
+		altMsg('c'),
+		ctrlMsg('a'),
+		ctrlMsg('e'),
+		tea.KeyPressMsg{Code: tea.KeyHome, Mod: tea.ModCtrl},
+		tea.KeyPressMsg{Code: tea.KeyEnd, Mod: tea.ModCtrl},
 		keyMsg(tea.KeyLeft),
 		keyMsg(tea.KeyRight),
 		keyMsg(tea.KeyUp),
 		keyMsg(tea.KeyDown),
-		{Type: tea.KeyLeft, Alt: true},
-		{Type: tea.KeyRight, Alt: true},
+		altMsg(tea.KeyLeft),
+		altMsg(tea.KeyRight),
 		keyMsg(tea.KeyHome),
 		keyMsg(tea.KeyEnd),
 		keyMsg(tea.KeyEsc),
@@ -166,7 +174,7 @@ func TestWrapCacheInvalidatedByEdit(t *testing.T) {
 	stale := m.memoizedWrap(1)
 	before := m.Revision()
 
-	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("z")})
+	m = step(m, textMsg("z"))
 
 	if _, ok := m.wraps.get(1, before, m.width); ok {
 		t.Errorf("rows memoized before the edit are still served after it")
@@ -222,7 +230,7 @@ func TestLineNumberGutterFitsThreeDigitLines(t *testing.T) {
 	m := areaWithLines(t, document.String(), 40, 4)
 	m.ShowLineNumbers = true
 	m.SetWidth(40)
-	m = step(m, keyMsg(tea.KeyCtrlEnd))
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnd, Mod: tea.ModCtrl})
 	m.SetCursor(0)
 
 	view := stripANSI(m.View())

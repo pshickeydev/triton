@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestLineNumberGutterDoesNotClipLine100(t *testing.T) {
@@ -18,7 +18,7 @@ func TestLineNumberGutterDoesNotClipLine100(t *testing.T) {
 	m := areaWithLines(t, document.String(), 40, 4)
 	m.ShowLineNumbers = true
 	m.SetWidth(40)
-	m = step(m, keyMsg(tea.KeyCtrlEnd))
+	m = step(m, tea.KeyPressMsg{Code: tea.KeyEnd, Mod: tea.ModCtrl})
 	m.SetCursor(0)
 	view := stripANSI(m.View())
 	if !strings.Contains(view, lastLine) {

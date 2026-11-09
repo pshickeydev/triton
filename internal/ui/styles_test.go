@@ -4,8 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/lipgloss/v2"
 )
 
 func TestPaneStyle_FocusedUsesFocusBorder(t *testing.T) {
@@ -38,10 +37,6 @@ func TestPaneStyle_FocusDoesNotMutateBase(t *testing.T) {
 }
 
 func TestLayout_RenderHighlightsFocusedPane(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI256)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	theme := DarkTheme()
 	styles := NewStyles(theme)
 
@@ -94,10 +89,6 @@ func TestModeForSize(t *testing.T) {
 }
 
 func TestRenderSmall_EditorViewOmitsStatus(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI256)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	styles := NewStyles(DarkTheme())
 	layout := NewLayout()
 	layout.SetSize(90, 26)
@@ -112,10 +103,6 @@ func TestRenderSmall_EditorViewOmitsStatus(t *testing.T) {
 }
 
 func TestRenderSmall_StatusViewOmitsEditor(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI256)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	styles := NewStyles(DarkTheme())
 	layout := NewLayout()
 	layout.SetSize(90, 26)
@@ -141,10 +128,6 @@ func TestRenderTooSmall_ShowsNotice(t *testing.T) {
 }
 
 func TestOverlay_PreservesDimensions(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI256)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	styles := NewStyles(DarkTheme())
 	layout := NewLayout()
 	layout.SetSize(120, 28)
@@ -169,10 +152,6 @@ func TestOverlay_PreservesDimensions(t *testing.T) {
 }
 
 func TestOverlay_PreservesUnderlyingColors(t *testing.T) {
-	prev := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI256)
-	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
-
 	theme := DarkTheme()
 	styles := NewStyles(theme)
 	layout := NewLayout()

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 func newTestTextarea(t *testing.T, value string) Model {
@@ -133,7 +133,7 @@ func TestYOffset(t *testing.T) {
 	ta.View()
 
 	for range 6 {
-		ta, _ = ta.Update(tea.KeyMsg{Type: tea.KeyDown})
+		ta, _ = ta.Update(keyMsg(tea.KeyDown))
 	}
 
 	if ta.YOffset() <= 0 {

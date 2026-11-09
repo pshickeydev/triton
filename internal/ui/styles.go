@@ -1,6 +1,10 @@
 package ui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"image/color"
+
+	"charm.land/lipgloss/v2"
+)
 
 type Pane int
 
@@ -18,7 +22,7 @@ type Styles struct {
 	Warning lipgloss.Style
 	Prompt  lipgloss.Style
 
-	focusBorder lipgloss.Color
+	focusBorder color.Color
 }
 
 func NewStyles(theme Theme) Styles {
