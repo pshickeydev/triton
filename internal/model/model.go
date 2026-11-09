@@ -710,7 +710,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	if m.focus == focusConsole {
 		switch msg.(type) {
-		case tea.KeyMsg, tea.MouseMsg:
+		case tea.KeyPressMsg, tea.MouseMsg:
 			var cmd tea.Cmd
 			m.console, cmd = m.console.Update(msg)
 			cmds = append(cmds, cmd)

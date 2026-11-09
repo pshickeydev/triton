@@ -250,7 +250,7 @@ Buffer persistence for `.tidal` files (plain Haskell text, normalized to match t
 - `Ctrl-M` is not a distinct key either: it is carriage return, which bubbletea reports as `enter`. Mute-all uses `Alt-M` instead.
 - `Ctrl-.` is not a distinct key in bubbletea. `Ctrl-\` is used for hush.
 - `[` / `]` alone conflict with text editing. `Alt-[` / `Alt-]` are used for tempo control.
-- `Shift-F1`–`Shift-F8` are not delivered reliably by terminals (bubbletea defines no shift-F key types), so solo toggles use `Alt-1`–`Alt-8`.
+- `Shift-F1`–`Shift-F8` are not delivered reliably by terminals (they collide with legacy escape sequences), so solo toggles use `Alt-1`–`Alt-8`.
 - `Ctrl-S` (save) and `Ctrl-O` (open) are implemented (see 3.9). Up/down history navigation remains planned for Phase 2.
 
 **Quit confirmation:** `Ctrl-C` opens a centered modal (`ui.Layout.Overlay` + `ui.Styles.Warning`) instead of quitting immediately. A second `Ctrl-C` (or a SIGINT/`InterruptMsg` when input is not a TTY) quits; `Esc` dismisses the modal. While the modal is open, all other key input is swallowed. The overlay composites the modal over the rendered panes at exact cell boundaries, preserving line widths and the underlying border/text colors. The warning mentions unsaved changes when the buffer differs from its file (see 3.9).
